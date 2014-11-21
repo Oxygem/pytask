@@ -38,14 +38,14 @@ pytask assumes Redis is setup in a highly-available manner; any client compatibl
 
 Stored has a hash in Redis:
 
-```js
+```py
 {
-    // Required to 'create' task
-    "function": "task_name",
-    "data": "json_data",
-    // Internally created/used
-    "last_update": 0,
-    "state": "[RUNNING|ENDED|ERROR|STOPPED|WAIT]"
+    # Required to 'create' task
+    'function': 'task_name',
+    'data': 'json_data',
+    # Internally created/used
+    'last_update': 0,
+    'state': '[RUNNING|ENDED|ERROR|STOPPED|WAIT]'
 }
 ```
 
