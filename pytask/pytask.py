@@ -81,9 +81,13 @@ class PyTask(object):
             self._add_task(new_task_id)
             self._get_new_tasks()
 
+    def add_task(self, task_class):
+        self.TASKS[task_class.NAME] = task_class
+
     # Run pytask, basically a wrapper to handle tick count & KeyboardInterrupt
-    def run(self, task_map):
-        self.TASKS = task_map
+    def run(self, task_map=None):
+        if task_map:
+            self.TASKS.update(task_map)
 
         self.logger.debug('Starting up...')
         self.logger.debug('Loaded tasks: {0}'.format(self.TASKS.keys()))
