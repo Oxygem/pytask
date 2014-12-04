@@ -1,26 +1,38 @@
 # pytask
 
-A simple Python task daemon for IO bound tasks, using greenlets. Support for distributed/HA setups.
+A simple Python task daemon for asynchronous IO bound tasks, based on greenlets. Support for distributed/HA setups.
 
 ## Synopsis
 
 ```python
+import gevent
+gevent.monkey.patch_all()
 import redis
-from pytask import PyTask, Task
+from pytask import PyTask, Task, Monitor, run_loop
 
+# Create pytask and pass it a Redis instance
 task_app = PyTask(redis.StrictRedis())
+# Add the in-built Monitor task
+task_app.add_task(Monitor)
 
-class TestTask(Task):
+# A custom task
+class MyTask(Task):
     class Config:
         NAME = 'test-task'
 
+    # Start the task
     def __init__(self, task_data):
-        print 'running...'
+        self.loop = gevent.spawn(run_loop, self.loop, 10)
 
+    # Do some work
+    def loop(self):
+        print 'looping...'
+
+    # Stop the task
     def stop(self):
-        print 'stopping...'
+        self.loop.kill()
 
-task_app.add_task(TestTask)
+task_app.add_task(MyTask)
 task_app.run()
 ```
 
