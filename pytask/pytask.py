@@ -1,5 +1,6 @@
 # pytask
-# provides a framework for managing & running greenlet based tasks
+# File: pytask.py
+# Desc: provides a framework for managing & running greenlet based tasks
 
 import time
 import logging
@@ -29,10 +30,8 @@ class Task(object):
 
 
 class PyTask(object):
-    # Internal config store
-    class Config:
-        REDIS = None
-        TASKS = {}
+    REDIS = None
+    TASKS = {}
 
     # Default config
     # new_task_interval = when to check for new tasks (s)
@@ -42,17 +41,15 @@ class PyTask(object):
     ):
         self.new_task_interval = new_task_interval
         self.logger = logging.getLogger('pytask')
+
+        # Set Redis instance & config constants
         self.redis = redis_instance
-        self.Config.REDIS = {
+        self.REDIS = {
             'TASK_SET': task_set,
             'NEW_QUEUE': new_queue,
             'END_QUEUE': end_queue,
             'TASK_PREFIX': task_prefix
         }
-
-    # Add a new task class
-    def add_task(self, task_class):
-        self.Config.TASKS[task_class.Config.NAME] = task_class
 
     # Stop a task (requested via pub/sub)
     def _stop_task(task_id):
@@ -67,26 +64,29 @@ class PyTask(object):
         self.logger.debug('Adding task: {0}'.format(task_id))
 
         # Check if task exists, exit if so (assume duplicate queue push)
-        task_exists = self.redis.sismember(self.Config.REDIS['TASK_SET'], task_id)
+        task_exists = self.redis.sismember(self.REDIS['TASK_SET'], task_id)
         if task_exists: return
 
         # Read the task hash
-        task_class, task_data = self.redis.hmget('{0}{1}'.format(self.Config.REDIS['TASK_PREFIX'], task_id), ['function', 'data'])
+        task_class, task_data = self.redis.hmget('{0}{1}'.format(self.REDIS['TASK_PREFIX'], task_id), ['function', 'data'])
 
         # Create task instance, assign it Redis
-        task = self.Config.TASKS[task_class](task_data)
+        task = self.TASKS[task_class](task_data)
         print task
         # Create greenlet
 
     def _get_new_tasks(self):
-        new_task_id = self.redis.rpop(self.Config.REDIS['NEW_QUEUE'])
+        new_task_id = self.redis.rpop(self.REDIS['NEW_QUEUE'])
         if new_task_id is not None:
             self._add_task(new_task_id)
+            self._get_new_tasks()
 
     # Run pytask, basically a wrapper to handle tick count & KeyboardInterrupt
-    def run(self):
+    def run(self, task_map):
+        self.TASKS = task_map
+
         self.logger.debug('Starting up...')
-        self.logger.debug('Loaded tasks: {0}'.format(self.Config.TASKS.keys()))
+        self.logger.debug('Loaded tasks: {0}'.format(self.TASKS.keys()))
 
         # Start the new_task loop
         new_task_loop = gevent.spawn(run_loop, self._get_new_tasks, self.new_task_interval)
