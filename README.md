@@ -12,27 +12,68 @@ from pytask import PyTask, Task, Monitor, run_loop
 
 # Create pytask and pass it a Redis instance
 task_app = PyTask(redis.StrictRedis())
-# Add the in-built Monitor task
-task_app.add_task(Monitor)
 
 # A custom task
 class MyTask(Task):
     class Config:
         NAME = 'test-task'
 
-    # Start the task
+    # Configure/prepare the task
     def __init__(self, task_data):
+        self.task_data = task_daa
+
+    # Start the task
+    def start(self):
         self.loop = gevent.spawn(run_loop, self.loop, 10)
 
     # Do some work
     def loop(self):
-        print 'looping...'
+        print self.task_data
 
     # Stop the task
     def stop(self):
         self.loop.kill()
 
 task_app.add_task(MyTask)
+task_app.run()
+```
+
+To start tasks, just write a little bit of JSON to the `new-task` queue/list in Redis:
+
+```sh
+redis-cli> HMSET <task_id> function <task_name> data <task_data>
+redis-cli> LPUSH new-task <task_id>
+```
+
+
+## Watching & controlling tasks via Redis pub/sub
+
+Tasks can be stopped, started & reloaded via pub/sub. Tasks can also emit events to pub/sub so progress can be watched externally:
+
+```sh
+# To control tasks
+redis-cli> PUBLISH task-<task_id>-control [stop|start|reload]
+
+# To watch tasks
+redis-cli> SUBSCRIBE task-<task_id>
+
+# To watch all tasks:
+redis-cli> PSUBSCRIBE task-*
+```
+
+Task events are sent as a JSON object, with `event` and `data` keys.
+
+
+## Monitoring tasks
+
+pytask includes a task for doing this:
+
+```py
+...
+from pytask import Monitor
+...
+task_app.add_task(Monitor)
+task_app.pre_start_task('pytask/monitor')
 task_app.run()
 ```
 
