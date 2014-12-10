@@ -1,17 +1,19 @@
-import gevent
+# pytask
+# File: monitor.py
+# Desc: a monitoring task to watch for and requeue dead tasks
 
 from .pytask import Task, run_loop
 
 
 class Monitor(Task):
-    class Config:
-        NAME = 'monitor'
+    NAME = 'pytask/monitor'
 
-    def __init__(self, task_data):
-        self.loop = gevent.spawn(run_loop, self.work, 10)
+    def __init__(self, **task_data):
+        self.loop_interval = task_data.pop('loop_interval', 10)
+        self.task_timeout = task_data.pop('task_timeout', 60)
 
-    def stop(self):
-        self.loop.stop()
+    def start(self):
+        run_loop(self.work, self.loop_interval)
 
     def work(self):
-        print 'loop'
+        print 'checking tasks...'
