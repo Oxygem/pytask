@@ -19,20 +19,16 @@ class MyTask(Task):
         NAME = 'test-task'
 
     # Configure/prepare the task
-    def __init__(self, task_data):
-        self.task_data = task_daa
+    def __init__(self, **task_data):
+        self.interval = task_data.pop('interval', 10)
 
     # Start the task
     def start(self):
-        self.loop = gevent.spawn(run_loop, self.loop, 10)
+        run_loop(self.loop, self.interval)
 
     # Do some work
     def loop(self):
-        print self.task_data
-
-    # Stop the task
-    def stop(self):
-        self.loop.kill()
+        print 'Doing stuff...'
 
 task_app.add_task(MyTask)
 task_app.run()
