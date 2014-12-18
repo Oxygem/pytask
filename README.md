@@ -4,7 +4,7 @@ A simple Python task daemon for asynchronous IO bound tasks, based on greenlets.
 
 ## Synopsis
 
-```python
+```py
 import gevent
 gevent.monkey.patch_all()
 import redis
@@ -34,10 +34,11 @@ task_app.add_task(MyTask)
 task_app.run()
 ```
 
-To start tasks, just write a little bit of JSON to the `new-task` queue/list in Redis:
+To start tasks, set the task/function name and some JSON task_data to the task has and push the task_id to the queue:
 
 ```sh
-redis-cli> HMSET <task_id> function <task_name> data <task_data>
+redis-cli> HSET task-<task_id> function <task_name>
+redis-cli> HSET task-<task_id> data <task_data>
 redis-cli> LPUSH new-task <task_id>
 ```
 
