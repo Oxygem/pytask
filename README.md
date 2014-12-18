@@ -76,8 +76,6 @@ task_app.run()
 
 ## Distribution/HA
 
-**To monitor for failed tasks** there is an included Monitor task which will do just that `from pytask import Monitor`. Put a task hash in Redis and push the task ID to the queue to start it.
-
 pytask assumes Redis is setup in a highly-available manner; any client compatible with pyredis will work. When the connection to Redis is lost for more than 60 seconds, all tasks are stopped locally. Assuming the rest of the pytask instances have access to Redis, and one of them is running a `Monitor` task, the stopped tasks will be requeued.
 
 
