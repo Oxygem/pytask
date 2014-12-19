@@ -6,6 +6,10 @@ from .pytask import Task, run_loop
 
 
 class Monitor(Task):
+    '''
+    A pytask which monitors py tasks!
+    Checks all task state in Redis at a configured interval, will re-queue tasks which timeout
+    '''
     NAME = 'pytask/monitor'
 
     def __init__(self, **task_data):
