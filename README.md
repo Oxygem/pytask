@@ -89,7 +89,7 @@ Stored has a hash in Redis:
 ```py
 {
     # Required to 'create' task
-    'function': 'task_name',
+    'task': 'task_name',
     'data': 'json_data',
     # Internally created/used
     'last_update': 0,
