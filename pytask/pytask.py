@@ -49,8 +49,8 @@ class Task(object):
 
 class PyTask(object):
     '''
-        A daemon that starts/stops tasks & replicates that to a Redis instance
-        tasks can be control via Redis pubsub
+    A daemon that starts/stops tasks & replicates that to a Redis instance
+    tasks can be control via Redis pubsub
     '''
     REDIS = None
     TASKS = {}
@@ -158,7 +158,7 @@ class PyTask(object):
         task_class, task_data = self.redis.hmget('{0}{1}'.format(
             self.REDIS['TASK_PREFIX'],
             task_id
-        ), ['name', 'data'])
+        ), ['task', 'data'])
 
         if task_data is None:
             task_data = {}
