@@ -12,9 +12,8 @@ from uuid import uuid4
 import gevent
 
 
-# Like setInterval, slight time drift as usual
-# useful in tasks as well as here
 def run_loop(function, interval):
+    '''Like setInterval, slight time drift as usual, useful in tasks as well as here'''
     while True:
         before = time.time()
         function()
@@ -140,7 +139,7 @@ class PyTask(object):
             self.REDIS['TASK_PREFIX'],
             task_id,
         ), {
-            'function': task_name,
+            'task': task_name,
             'data': json.dumps(task_data)
         })
 
@@ -159,7 +158,7 @@ class PyTask(object):
         task_class, task_data = self.redis.hmget('{0}{1}'.format(
             self.REDIS['TASK_PREFIX'],
             task_id
-        ), ['function', 'data'])
+        ), ['name', 'data'])
 
         if task_data is None:
             task_data = {}

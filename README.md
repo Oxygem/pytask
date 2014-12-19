@@ -34,10 +34,10 @@ task_app.add_task(MyTask)
 task_app.run()
 ```
 
-To start tasks, set the task/function name and some JSON task_data to the task has and push the task_id to the queue:
+To start tasks, set the task name and some JSON task_data to the task has and push the task_id to the queue:
 
 ```sh
-redis-cli> HSET task-<task_id> function <task_name>
+redis-cli> HSET task-<task_id> task <task_name>
 redis-cli> HSET task-<task_id> data <task_data>
 redis-cli> LPUSH new-task <task_id>
 ```
