@@ -2,13 +2,12 @@
 
 A simple Python task daemon for asynchronous IO bound tasks, based on greenlets. Support for distributed/HA setups.
 
+
 ## Synopsis
 
 ```py
-import gevent
-gevent.monkey.patch_all()
 import redis
-from pytask import PyTask, Task, Monitor, run_loop
+from pytask import PyTask, Task
 
 # Create pytask and pass it a Redis instance
 task_app = PyTask(redis.StrictRedis())
@@ -20,15 +19,11 @@ class MyTask(Task):
 
     # Configure/prepare the task
     def __init__(self, **task_data):
-        self.interval = task_data.pop('interval', 10)
+        self.text = task_data.pop('text', 'hello world')
 
     # Start the task
     def start(self):
-        run_loop(self.loop, self.interval)
-
-    # Do some work
-    def loop(self):
-        print 'Doing stuff...'
+        print self.text
 
 task_app.add_task(MyTask)
 task_app.run()
@@ -41,6 +36,8 @@ redis-cli> HSET task-<task_id> task <task_name>
 redis-cli> HSET task-<task_id> data <task_data>
 redis-cli> LPUSH new-task <task_id>
 ```
+
+Check out the [full example](./example/).
 
 
 ## Watching & controlling tasks via Redis pub/sub
@@ -61,6 +58,15 @@ redis-cli> PSUBSCRIBE task-*
 Task events are sent as a JSON object, with `event` and `data` keys.
 
 
+## Ending tasks
+
+When a task completes it's state is set to `ENDED` or `ERROR` depending on the return values. A task can either return one or two values. A single value results in the tasks state being set (`None|True` -> `ENDED` or `False` -> `ERROR`). A second return value means the state is set the same, but the second argument is placed into the task's hash as "end data". The task_id is then pushed to one of the end task or error task queues.
+
+### Cleaning up tasks which output data
+
+When a task returns a single value, pytask takes care of removing it's task_id & hash from Redis. However, when data is returned, pytask will only remove the task_id, and push it into the end or error task queue. It is then up to an external application to consume these queues, and handle the task hash as required - including removing it from Redis.
+
+
 ## Monitoring tasks
 
 pytask includes a task for doing this:
@@ -75,9 +81,25 @@ task_app.run()
 ```
 
 
+### Exception handling
+
+**TODO: coming soon** - add exception handlers to pytask.
+
+
+## Redis keys
+
+Defaults, see `PyTask.__init__` for customization:
+
++ Task set = `tasks` - a set of task_id's considered to be "active" (`RUNING` or `STOPPED`) and tasks in `EXCEPTION` state
++ Task prefix = `task-` - prefix to all task_id's to get the task hash key
++ New task queue = `new-task` - where to push new task_id's after writing their hash set
++ End task queue = `end-task` - where to read task_id's from tasks that completed successfully
++ Error task queue = `error-task` - where to read task_id's from tasks that completed with an error
+
+
 ## Distribution/HA
 
-pytask assumes Redis is setup in a highly-available manner; any client compatible with pyredis will work. When the connection to Redis is lost for more than 60 seconds, all tasks are stopped locally. Assuming the rest of the pytask instances have access to Redis, and one of them is running a `Monitor` task, the stopped tasks will be requeued.
+pytask assumes Redis is setup in a highly-available manner (upon disconnect workers stop running tasks); any client compatible with pyredis will work. When the connection to Redis is lost for more than 60 seconds, all tasks are stopped locally. Assuming the rest of the pytask instances have access to Redis, and one of them is running a `Monitor` task, the stopped tasks will be requeued.
 
 
 ## Internals
@@ -93,7 +115,7 @@ Stored has a hash in Redis:
     'data': 'json_data',
     # Internally created/used
     'last_update': 0,
-    'state': '[RUNNING|ENDED|ERROR|STOPPED|WAIT]'
+    'state': '[RUNNING|ENDED|ERROR|EXCEPTION|STOPPED|WAIT]'
 }
 ```
 
@@ -101,5 +123,6 @@ Stored has a hash in Redis:
 
 + `RUNNING` - the task is active, and to be monitoed
 + `ENDED` - the task ended successfully
-+ `ERROR` - the task had an error
++ `ERROR` - the task ended with an error
++ `EXCEPTION` - the task encountered an exception
 + `STOPPED` - the task was intentionally stopped, no monitoring occurs
