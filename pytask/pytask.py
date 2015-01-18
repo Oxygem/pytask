@@ -34,6 +34,12 @@ class Task(object):
     # & channel name
     _channel = None
 
+    # Data externally provided
+    task_data = {}
+
+    def __init__(self, **task_data):
+        self.task_data = task_data
+
     def emit(self, event, data):
         '''Emit task events -> pubsub channel'''
         self._redis.publish(self._channel, json.dumps({
@@ -68,7 +74,8 @@ class PyTask(object):
     ### Default config
     # new_task_interval = when to check for new tasks (s)
     def __init__(self, redis_instance,
-        task_set='tasks', new_queue='new-task', end_queue='end-task', task_prefix='task-',
+        task_set='tasks', task_prefix='task-',
+        new_queue='new-task', end_queue='end-task', error_queue='error-task',
         new_task_interval=1, update_task_interval=5, task_stop_timeout=300
     ):
         self.new_task_interval = new_task_interval
@@ -78,12 +85,11 @@ class PyTask(object):
 
         # Set Redis instance & config constants
         self.redis = redis_instance
-        self.REDIS = {
-            'TASK_SET': task_set,
-            'NEW_QUEUE': new_queue,
-            'END_QUEUE': end_queue,
-            'TASK_PREFIX': task_prefix
-        }
+        self.REDIS_TASK_SET = task_set
+        self.REDIS_TASK_PREFIX = task_prefix
+        self.REDIS_NEW_QUEUE = new_queue
+        self.REDIS_END_QUEUE = end_queue
+        self.REDIS_ERROR_QUEUE = error_queue
 
         # Setup Redis pubsub
         self.pubsub = self.redis.pubsub()
@@ -129,16 +135,19 @@ class PyTask(object):
 
 
     ### Internal task management
+    def _task_name(self, task_id):
+        return '{0}{1}'.format(
+            self.REDIS_TASK_PREFIX,
+            task_id
+        )
+
     def _pre_start_task(self, task_name, task_data):
         '''Starts a task on *this* worker'''
         # Generate task_id
         task_id = str(uuid4())
 
         # Write task hash to Redis
-        self.redis.hmset('{0}{1}'.format(
-            self.REDIS['TASK_PREFIX'],
-            task_id,
-        ), {
+        self.redis.hmset(self._task_name(task_id), {
             'task': task_name,
             'data': json.dumps(task_data)
         })
@@ -151,14 +160,11 @@ class PyTask(object):
         self.logger.debug('New task: {0}'.format(task_id))
 
         # Check if task exists, exit if so (assume duplicate queue push)
-        task_exists = self.redis.sismember(self.REDIS['TASK_SET'], task_id)
+        task_exists = self.redis.sismember(self.REDIS_TASK_SET, task_id)
         if task_exists: return
 
         # Read the task hash
-        task_class, task_data = self.redis.hmget('{0}{1}'.format(
-            self.REDIS['TASK_PREFIX'],
-            task_id
-        ), ['task', 'data'])
+        task_class, task_data = self.redis.hmget(self._task_name(task_id), ['task', 'data'])
 
         if task_data is None:
             task_data = {}
@@ -174,16 +180,13 @@ class PyTask(object):
 
         task._id = task_id
         task._redis = self.redis
-        task._channel = '{0}{1}'.format(self.REDIS['TASK_PREFIX'], task_id)
+        task._channel = self._task_name(task_id)
 
         # Add to Redis set
-        self.redis.sadd(self.REDIS['TASK_SET'], task_id)
+        self.redis.sadd(self.REDIS_TASK_SET, task_id)
 
         # Set Redis data
-        self.redis.hmset('{0}{1}'.format(
-            self.REDIS['TASK_PREFIX'],
-            task_id,
-        ), {
+        self.redis.hmset(self._task_name(task_id), {
             'state': 'RUNNING',
             'last_update': time.time()
         })
@@ -192,7 +195,7 @@ class PyTask(object):
         self._subscribe(
             lambda message: self._control_task(task_id, message),
             channel='{0}{1}-control'.format(
-            self.REDIS['TASK_PREFIX'],
+            self.REDIS_TASK_PREFIX,
             task_id
         ))
 
@@ -217,16 +220,15 @@ class PyTask(object):
         if self.tasks[task_id]._state == 'STOPPED': return
         self.logger.debug('Stopping task: {0}'.format(task_id))
 
+        # Stop the task
         self.tasks[task_id].stop()
+        # End/delete it's greenlet
         self.greenlets[task_id].kill()
         del self.greenlets[task_id]
 
         # Set STOPPED in task & Redis
         self.tasks[task_id]._state = 'STOPPED'
-        self.redis.hset('{0}{1}'.format(
-            self.REDIS['TASK_PREFIX'],
-            task_id,
-        ), 'state', 'STOPPED')
+        self.redis.hset(self._task_name(task_id), 'state', 'STOPPED')
 
     def _start_task(self, task_id):
         '''Starts a task in a new greenlet'''
@@ -243,10 +245,7 @@ class PyTask(object):
 
         # Set running state
         self.tasks[task_id]._state = 'RUNNING'
-        self.redis.hset('{0}{1}'.format(
-            self.REDIS['TASK_PREFIX'],
-            task_id,
-        ), 'state', 'RUNNING')
+        self.redis.hset(self._task_name(task_id), 'state', 'RUNNING')
 
     def _reload_task(self, task_id):
         '''Reload a tasks data by stopping/re-init-ing/starting'''
@@ -254,10 +253,7 @@ class PyTask(object):
         self._stop_task(task_id)
 
         # Reload task data from Redis
-        task_data = self.redis.hget('{0}{1}'.format(
-            self.REDIS['TASK_PREFIX'],
-            task_id
-        ), 'data')
+        task_data = self.redis.hget(self._task_name(task_id), 'data')
 
         # Re-init & start the task
         self.tasks[task_id].__init__(**json.loads(task_data))
@@ -274,14 +270,11 @@ class PyTask(object):
 
         # Set error state
         self.tasks[task_id]._state = 'ERROR'
-        self.redis.hset('{0}{1}'.format(
-            self.REDIS['TASK_PREFIX'],
-            task_id,
-        ), 'state', 'ERROR')
+        self.redis.hset(self._task_name(task_id), 'state', 'EXCEPTION')
 
     def _get_new_tasks(self):
         '''Check for new tasks in Redis'''
-        new_task_id = self.redis.rpop(self.REDIS['NEW_QUEUE'])
+        new_task_id = self.redis.rpop(self.REDIS_NEW_QUEUE)
         if new_task_id is not None:
             self._add_task(new_task_id)
             self._get_new_tasks()
@@ -292,10 +285,9 @@ class PyTask(object):
 
         for task_id, task in self.tasks.iteritems():
             if task._state == 'RUNNING':
-                self.redis.hset('{}{}'.format(
-                    self.REDIS['TASK_PREFIX'],
-                    task_id
-                ), 'last_update', update_time)
+                self.redis.hset(self._task_name(task_id), 'last_update', update_time)
+
+                # TODO: join (non-block) all tasks, put result in Redis
 
         # TODO: cleanup tasks
 
