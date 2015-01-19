@@ -88,9 +88,9 @@ task_app.run()
 
 ## Redis keys
 
-Defaults, see `PyTask.__init__` for customization:
+Defaults below, see `PyTask.__init__` for customization:
 
-+ Task set = `tasks` - a set of task_id's considered to be "active" (`RUNING` or `STOPPED`) and tasks in `EXCEPTION` state
++ Task set = `tasks` - a set of all current task_id's
 + Task prefix = `task-` - prefix to all task_id's to get the task hash key
 + New task queue = `new-task` - where to push new task_id's after writing their hash set
 + End task queue = `end-task` - where to read task_id's from tasks that completed successfully
@@ -99,7 +99,7 @@ Defaults, see `PyTask.__init__` for customization:
 
 ## Distribution/HA
 
-pytask assumes Redis is setup in a highly-available manner (upon disconnect workers stop running tasks); any client compatible with pyredis will work. When the connection to Redis is lost for more than 60 seconds, all tasks are stopped locally. Assuming the rest of the pytask instances have access to Redis, and one of them is running a `Monitor` task, the stopped tasks will be requeued.
+pytask assumes Redis is setup in a highly-available manner (upon disconnect the worker will fail); any client compatible with pyredis will work. Assuming the rest of the pytask instances have access to Redis, and one of them is running a `Monitor` task, the stopped tasks will be requeued.
 
 
 ## Internals
@@ -113,6 +113,8 @@ Stored has a hash in Redis:
     # Required to 'create' task
     'task': 'task_name',
     'data': 'json_data',
+    # Created sometimes by pytask
+    'end_data': 'json_data',
     # Internally created/used
     'last_update': 0,
     'state': '[RUNNING|ENDED|ERROR|EXCEPTION|STOPPED|WAIT]'
