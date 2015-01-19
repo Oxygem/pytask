@@ -2,11 +2,9 @@
 # File: pytask.py
 # Desc: provides a framework for managing & running greenlet based tasks
 
-import sys
 import time
 import json
 import logging
-import traceback
 from uuid import uuid4
 
 import gevent
@@ -34,13 +32,10 @@ class Task(object):
     # & channel name
     _channel = None
 
-    # Data externally provided
-    task_data = {}
-
     def __init__(self, **task_data):
         self.task_data = task_data
 
-    def emit(self, event, data):
+    def emit(self, event, data=None):
         '''Emit task events -> pubsub channel'''
         self._redis.publish(self._channel, json.dumps({
             'event': event,
@@ -169,6 +164,10 @@ class PyTask(object):
         if task_data is None:
             task_data = {}
 
+        if task_class not in self.TASKS:
+            self.logger.critical('Task not found: {}'.format(task_class))
+            return
+
         # Create task instance, assign it Redis
         try:
             task = self.TASKS[task_class](**json.loads(task_data))
@@ -176,6 +175,13 @@ class PyTask(object):
             self.logger.critical('Task {0} failed to initialize with exception: {1}'.format(
                 task_class, e
             ))
+            # Set Redis data
+            self.redis.hmset(self._task_name(task_id), {
+                'state': 'EXCEPTION',
+                'exception_data': e
+            })
+
+            # TODO: exception handlers
             return
 
         task._id = task_id
@@ -194,10 +200,8 @@ class PyTask(object):
         # Subscribe to control channel
         self._subscribe(
             lambda message: self._control_task(task_id, message),
-            channel='{0}{1}-control'.format(
-            self.REDIS_TASK_PREFIX,
-            task_id
-        ))
+            channel='{}-control'.format(self._task_name(task_id))
+        )
 
         # Assign the task internally & pass to _start_task
         self.tasks[task_id] = task
@@ -233,15 +237,12 @@ class PyTask(object):
     def _start_task(self, task_id):
         '''Starts a task in a new greenlet'''
         if self.tasks[task_id]._state == 'RUNNING': return
-
         self.logger.debug('Starting task: {0}'.format(task_id))
-        def wrapper():
-            try:
-                self.tasks[task_id].start()
-            except Exception as e:
-                self._on_task_exception(task_id, e)
 
-        self.greenlets[task_id] = gevent.spawn(wrapper)
+        greenlet = gevent.spawn(self.tasks[task_id].start)
+        greenlet.link(lambda glet: self._on_task_end(task_id, glet))
+        greenlet.link_exception(lambda glet: self._on_task_exception(task_id, glet))
+        self.greenlets[task_id] = greenlet
 
         # Set running state
         self.tasks[task_id]._state = 'RUNNING'
@@ -259,18 +260,48 @@ class PyTask(object):
         self.tasks[task_id].__init__(**json.loads(task_data))
         self._start_task(task_id)
 
-    def _on_task_exception(self, task_id, e):
-        '''Restart failing tasks'''
-        # Get the error details
-        error_type, value, trace = sys.exc_info()
-        self.logger.warning('Exception in task: {0}: {1} - {2}'.format(task_id, error_type.__name__, e))
-        print '------------ Traceback:'
-        print traceback.print_tb(trace)
-        print '------------'
+    def _on_task_exception(self, task_id, greenlet):
+        '''Handle exceptions in running tasks'''
+        self.logger.warning('Exception in task: {0}: {1}'.format(task_id, greenlet.exception))
 
         # Set error state
-        self.tasks[task_id]._state = 'ERROR'
-        self.redis.hset(self._task_name(task_id), 'state', 'EXCEPTION')
+        self.tasks[task_id]._state = 'EXCEPTION'
+        self.redis.hmset(self._task_name(task_id), {
+            'state': 'EXCEPTION',
+            'exception_data': greenlet.exception
+        })
+
+        # Emit the exception event
+        self.tasks[task_id].emit('exception', greenlet.exception)
+
+        # TODO: exception handlers
+
+    def _on_task_end(self, task_id, greenlet):
+        '''Handle tasks which have ended properly, either with success or failure'''
+        return_values = greenlet.get(block=False)
+        if isinstance(return_values, tuple):
+            status, data = return_values
+        else:
+            status, data = return_values, None
+
+        # Set task's end data
+        if data is not None:
+            data_key = 'error_data' if status is False else 'end_data'
+            self.redis.hset(self._task_name(task_id), data_key, json.dumps(data))
+
+        # Set the tasks state
+        state = 'ERROR' if status is False else 'END'
+        self.tasks[task_id]._state = state
+        self.redis.hset(self._task_name(task_id), 'state', state)
+
+        if status is False:
+            self.redis.lpush(self.REDIS_ERROR_QUEUE, task_id)
+            self.tasks[task_id].emit('error', data)
+        else:
+            self.redis.lpush(self.REDIS_END_QUEUE, task_id)
+            self.tasks[task_id].emit('end', data)
+
+        self.logger.info('Task ended: {0}, state = {1}, data = {2}'.format(task_id, state, data))
 
     def _get_new_tasks(self):
         '''Check for new tasks in Redis'''
@@ -280,16 +311,14 @@ class PyTask(object):
             self._get_new_tasks()
 
     def _update_tasks(self):
-        '''Update RUNNING task times in Redis'''
+        '''Update RUNNING task times in Redis, handle ended tasks'''
         update_time = time.time()
 
         for task_id, task in self.tasks.iteritems():
-            if task._state == 'RUNNING':
-                self.redis.hset(self._task_name(task_id), 'last_update', update_time)
+            if task._state != 'RUNNING': continue
 
-                # TODO: join (non-block) all tasks, put result in Redis
-
-        # TODO: cleanup tasks
+            # Task still chugging along, update it's time
+            self.redis.hset(self._task_name(task_id), 'last_update', update_time)
 
 
     ### Redis pubsub helpers
