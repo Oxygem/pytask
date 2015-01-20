@@ -309,7 +309,7 @@ class PyTask(object):
             self.redis.delete(self._task_name(task_id))
 
             # Remove the ID from the set
-            self.redis.sdel(self.REDIS_TASK_SET, task_id)
+            self.redis.srem(self.REDIS_TASK_SET, task_id)
 
         # No cleanup, just push to the end-queue for cleanup
         else:
