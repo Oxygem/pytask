@@ -31,6 +31,8 @@ class Task(object):
     _redis = None
     # & channel name
     _channel = None
+    # Clean me up?
+    _cleanup = None
 
     def __init__(self, **task_data):
         self.task_data = task_data
@@ -70,12 +72,12 @@ class PyTask(object):
     # new_task_interval = when to check for new tasks (s)
     def __init__(self, redis_instance,
         task_set='tasks', task_prefix='task-',
-        new_queue='new-task', end_queue='end-task', error_queue='error-task',
-        new_task_interval=1, update_task_interval=5, task_stop_timeout=300
+        new_queue='new-task', end_queue='end-task',
+        new_task_interval=1, update_task_interval=5, cleanup_tasks=False
     ):
         self.new_task_interval = new_task_interval
         self.update_task_interval = update_task_interval
-        self.task_stop_timeout = task_stop_timeout
+        self.cleanup_tasks = cleanup_tasks
         self.logger = logging.getLogger('pytask')
 
         # Set Redis instance & config constants
@@ -84,7 +86,6 @@ class PyTask(object):
         self.REDIS_TASK_PREFIX = task_prefix
         self.REDIS_NEW_QUEUE = new_queue
         self.REDIS_END_QUEUE = end_queue
-        self.REDIS_ERROR_QUEUE = error_queue
 
         # Setup Redis pubsub
         self.pubsub = self.redis.pubsub()
@@ -159,8 +160,10 @@ class PyTask(object):
         if task_exists: return
 
         # Read the task hash
-        task_class, task_data = self.redis.hmget(self._task_name(task_id), ['task', 'data'])
+        task_class, task_data, cleanup = self.redis.hmget(self._task_name(task_id), ['task', 'data', 'cleanup'])
 
+        # No cleanup = PyTask default
+        cleanup = self.cleanup_tasks if cleanup is None else cleanup == 'true'
         if task_data is None:
             task_data = {}
 
@@ -187,6 +190,7 @@ class PyTask(object):
         task._id = task_id
         task._redis = self.redis
         task._channel = self._task_name(task_id)
+        task._cleanup = cleanup
 
         # Add to Redis set
         self.redis.sadd(self.REDIS_TASK_SET, task_id)
@@ -286,22 +290,34 @@ class PyTask(object):
 
         # Set task's end data
         if data is not None:
-            data_key = 'error_data' if status is False else 'end_data'
-            self.redis.hset(self._task_name(task_id), data_key, json.dumps(data))
+            self.redis.hset(self._task_name(task_id), 'end_data', json.dumps(data))
 
+        state = 'ERROR' if status is False else 'COMPLETE'
         # Set the tasks state
-        state = 'ERROR' if status is False else 'END'
-        self.tasks[task_id]._state = state
         self.redis.hset(self._task_name(task_id), 'state', state)
+        # Emit complete/error
+        self.tasks[task_id].emit(state.lower(), data)
 
-        if status is False:
-            self.redis.lpush(self.REDIS_ERROR_QUEUE, task_id)
-            self.tasks[task_id].emit('error', data)
+        # Cleanup
+        self._cleanup_task(task_id)
+        self.logger.info('Task ended: {0}, state = {1}, data = {2}'.format(task_id, state, data))
+
+    def _cleanup_task(self, task_id):
+        '''Cleanup tasks in Redis and/or PyTask instance, depending on _cleanup setting'''
+        if self.tasks[task_id]._cleanup:
+            # Delete the hash
+            self.redis.delete(self._task_name(task_id))
+
+            # Remove the ID from the set
+            self.redis.sdel(self.REDIS_TASK_SET, task_id)
+
+        # No cleanup, just push to the end-queue for cleanup
         else:
             self.redis.lpush(self.REDIS_END_QUEUE, task_id)
-            self.tasks[task_id].emit('end', data)
 
-        self.logger.info('Task ended: {0}, state = {1}, data = {2}'.format(task_id, state, data))
+        # Remove internal task
+        del self.tasks[task_id]
+        del self.greenlets[task_id]
 
     def _get_new_tasks(self):
         '''Check for new tasks in Redis'''
