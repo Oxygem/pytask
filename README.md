@@ -60,7 +60,7 @@ Task events are sent as a JSON object, with `event` and `data` keys.
 
 ## Ending tasks
 
-When a task completes it's state is set to `ENDED` or `ERROR` depending on the return values. A task can either return one or two values. A single value results in the tasks state being set (`None|True` -> `ENDED` or `False` -> `ERROR`). A second return value means the state is set the same, but the second argument is placed into the task's hash as "end data". The task_id is then pushed to one of the end task or error task queues.
+When a task completes it's state is set to `ENDED` or `ERROR` depending on the return values. A task can either return one or two values. A single value results in the tasks state being set (`None|True` -> `ENDED` or `False` -> `ERROR`). A second return value means the state is set the same, but the second argument is placed into the task's hash with key `end_data`.
 
 ### Cleaning up tasks
 
