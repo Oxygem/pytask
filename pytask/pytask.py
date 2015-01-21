@@ -55,7 +55,6 @@ class PyTask(object):
     A daemon that starts/stops tasks & replicates that to a Redis instance
     tasks can be control via Redis pubsub
     '''
-    REDIS = None
     TASKS = {}
 
     # Active tasks
@@ -67,6 +66,8 @@ class PyTask(object):
     # Pubsub
     pattern_subscriptions = {}
     channel_subscriptions = {}
+    # Custom exception handlers
+    exception_handlers = []
 
     ### Default config
     # new_task_interval = when to check for new tasks (s)
@@ -129,6 +130,10 @@ class PyTask(object):
         '''Add a task class'''
         self.TASKS[task_class.NAME] = task_class
 
+    def add_exception_handler(self, handler):
+        '''Add an exception handler'''
+        self.exception_handlers.append(handler)
+
 
     ### Internal task management
     def _task_name(self, task_id):
@@ -184,7 +189,10 @@ class PyTask(object):
                 'exception_data': e
             })
 
-            # TODO: exception handlers
+            # Run exception handlers
+            for handler in self.exception_handlers:
+                handler(e)
+
             return
 
         task._id = task_id
@@ -278,7 +286,9 @@ class PyTask(object):
         # Emit the exception event
         self.tasks[task_id].emit('exception', greenlet.exception)
 
-        # TODO: exception handlers
+        # Run exception handlers
+        for handler in self.exception_handlers:
+            handler(greenlet.exception)
 
     def _on_task_end(self, task_id, greenlet):
         '''Handle tasks which have ended properly, either with success or failure'''
