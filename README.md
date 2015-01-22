@@ -83,7 +83,7 @@ task_app.run()
 
 ### Exception handling
 
-**TODO: coming soon** - add exception handlers to pytask.
+To add exception handlers to PyTask, call `pytask.add_exception_handler(handler)`. The handler will be called with the exception object.
 
 
 ## Redis keys
