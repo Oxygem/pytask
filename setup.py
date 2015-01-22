@@ -9,7 +9,7 @@ except ImportError:
     from distutils.core import setup
 
 setup(
-    version = '0.0.1',
+    version = '1.0.0',
     name = 'pytask',
     description = 'A simple Python based task runner',
     author = 'Nick Barrett',
