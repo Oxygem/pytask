@@ -63,6 +63,7 @@ class PyTask(object):
     greenlets = {}
     # Tasks to start on run
     pre_start_tasks = []
+    pre_start_task_ids = []
     # Pubsub
     pattern_subscriptions = {}
     channel_subscriptions = {}
@@ -118,6 +119,16 @@ class PyTask(object):
         except KeyboardInterrupt:
             # ... or the user/process asked us to quit!
             self.logger.info('Exiting upon user command...')
+            # Stop & requeue all running tasks (for another worker/etc)
+            for task_id in self.tasks.keys():
+                if task_id in self.pre_start_task_ids: continue
+
+                # Set state STOPPED
+                self._stop_task(task_id)
+                # Remove from the active task list
+                self.redis.srem(self.REDIS_TASK_SET, task_id)
+                # Requeue for another worker
+                self.redis.lpush(self.REDIS_NEW_QUEUE, task_id)
 
     def pre_start_task(self, task_name, task_data=None):
         '''Used to start tasks on this worker (no queue), before calling .run'''
@@ -146,6 +157,7 @@ class PyTask(object):
         '''Starts a task on *this* worker'''
         # Generate task_id
         task_id = str(uuid4())
+        self.pre_start_task_ids.append(task_id)
 
         # Write task hash to Redis
         self.redis.hmset(self._task_name(task_id), {
@@ -240,7 +252,6 @@ class PyTask(object):
         self.tasks[task_id].stop()
         # End/delete it's greenlet
         self.greenlets[task_id].kill()
-        del self.greenlets[task_id]
 
         # Set STOPPED in task & Redis
         self.tasks[task_id]._state = 'STOPPED'
@@ -292,6 +303,9 @@ class PyTask(object):
 
     def _on_task_end(self, task_id, greenlet):
         '''Handle tasks which have ended properly, either with success or failure'''
+        if self.tasks[task_id]._state == 'STOPPED':
+            return
+
         return_values = greenlet.get(block=False)
         if isinstance(return_values, tuple):
             status, data = return_values
