@@ -119,6 +119,10 @@ class PyTask(object):
         except KeyboardInterrupt:
             # ... or the user/process asked us to quit!
             self.logger.info('Exiting upon user command...')
+            # Stop our loops
+            new_task_loop.kill()
+            pubsub_loop.kill()
+            task_update_loop.kill()
             # Stop & requeue all running tasks (for another worker/etc)
             for task_id in self.tasks.keys():
                 if task_id in self.pre_start_task_ids: continue
