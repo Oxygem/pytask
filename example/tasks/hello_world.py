@@ -8,8 +8,5 @@ from .pytask import Task
 class HelloWorld(Task):
     NAME = 'hello_world'
 
-    def __init__(self, **task_data):
-        self.text = task_data.pop('text', 'world')
-
     def start(self):
-        print 'HELLO {}'.format(self.text)
+        print 'HELLO {}'.format(self.task_data.get('hello', 'WORLD'))
