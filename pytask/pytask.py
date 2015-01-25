@@ -125,7 +125,8 @@ class PyTask(object):
             task_update_loop.kill()
             # Stop & requeue all running tasks (for another worker/etc)
             for task_id in self.tasks.keys():
-                if task_id in self.pre_start_task_ids: continue
+                if task_id in self.pre_start_task_ids:
+                    continue
 
                 # Set state STOPPED
                 self._stop_task(task_id)
@@ -176,10 +177,6 @@ class PyTask(object):
         '''Interally add a task from the new-task queue'''
         self.logger.debug('New task: {0}'.format(task_id))
 
-        # Check if task exists, exit if so (assume duplicate queue push)
-        task_exists = self.redis.sismember(self.REDIS_TASK_SET, task_id)
-        if task_exists: return
-
         # Read the task hash
         task_class, task_data, cleanup = self.redis.hmget(self._task_name(task_id), ['task', 'data', 'cleanup'])
 
@@ -202,7 +199,7 @@ class PyTask(object):
             # Set Redis data
             self.redis.hmset(self._task_name(task_id), {
                 'state': 'EXCEPTION',
-                'exception_data': e
+                'exception_data': str(e)
             })
 
             # Run exception handlers
@@ -295,11 +292,11 @@ class PyTask(object):
         self.tasks[task_id]._state = 'EXCEPTION'
         self.redis.hmset(self._task_name(task_id), {
             'state': 'EXCEPTION',
-            'exception_data': greenlet.exception
+            'exception_data': str(greenlet.exception)
         })
 
         # Emit the exception event
-        self.tasks[task_id].emit('exception', greenlet.exception)
+        self.tasks[task_id].emit('exception', str(greenlet.exception))
 
         # Run exception handlers
         for handler in self.exception_handlers:
