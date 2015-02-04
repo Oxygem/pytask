@@ -260,7 +260,7 @@ class PyTask(object):
 
     def _start_task(self, task_id):
         '''Starts a task in a new greenlet'''
-        if self.tasks[task_id]._state == 'RUNNING': return
+        if self.tasks[task_id]._state == 'RUNNING':return
         self.logger.debug('Starting task: {0}'.format(task_id))
 
         greenlet = gevent.spawn(self.tasks[task_id].start)
@@ -286,7 +286,7 @@ class PyTask(object):
 
     def _on_task_exception(self, task_id, greenlet):
         '''Handle exceptions in running tasks'''
-        self.logger.warning('Exception in task: {0}: {1}'.format(task_id, greenlet.exception))
+        if self.tasks[task_id]._state == 'EXCEPTION': return
 
         # Set error state
         self.tasks[task_id]._state = 'EXCEPTION'
@@ -302,10 +302,13 @@ class PyTask(object):
         for handler in self.exception_handlers:
             handler(greenlet.exception)
 
+        # Cleanup
+        self._cleanup_task(task_id)
+        self.logger.warning('Exception in task: {0}: {1}'.format(task_id, greenlet.exception))
+
     def _on_task_end(self, task_id, greenlet):
         '''Handle tasks which have ended properly, either with success or failure'''
-        if self.tasks[task_id]._state == 'STOPPED':
-            return
+        if self.tasks[task_id]._state == 'STOPPED': return
 
         return_values = greenlet.get(block=False)
         if isinstance(return_values, tuple):
