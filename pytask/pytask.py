@@ -93,7 +93,6 @@ class PyTask(object):
         self.pubsub = self.redis.pubsub()
         self.pubsub.subscribe(None) # has to be called before we can get_message
 
-
     ### Public api
     def run(self, task_map=None):
         '''Run pytask, basically a wrapper to handle tick count & KeyboardInterrupt'''
@@ -125,15 +124,16 @@ class PyTask(object):
             task_update_loop.kill()
             # Stop & requeue all running tasks (for another worker/etc)
             for task_id in self.tasks.keys():
-                if task_id in self.pre_start_task_ids:
-                    continue
-
-                # Set state STOPPED
+                # Stop the task
                 self._stop_task(task_id)
                 # Remove from the active task list
                 self.redis.srem(self.REDIS_TASK_SET, task_id)
-                # Requeue for another worker
-                self.redis.lpush(self.REDIS_NEW_QUEUE, task_id)
+                # Cleanup/remove task if a pre_start_one (_cleanup = True)
+                if task_id in self.pre_start_task_ids:
+                    self._cleanup_task(task_id)
+                # Otherwise requeue for another worker
+                else:
+                    self.redis.lpush(self.REDIS_NEW_QUEUE, task_id)
 
     def pre_start_task(self, task_name, task_data=None):
         '''Used to start tasks on this worker (no queue), before calling .run'''
@@ -149,7 +149,6 @@ class PyTask(object):
     def add_exception_handler(self, handler):
         '''Add an exception handler'''
         self.exception_handlers.append(handler)
-
 
     ### Internal task management
     def _task_name(self, task_id):
@@ -167,7 +166,8 @@ class PyTask(object):
         # Write task hash to Redis
         self.redis.hmset(self._task_name(task_id), {
             'task': task_name,
-            'data': json.dumps(task_data)
+            'data': json.dumps(task_data),
+            'cleanup': 'true'
         })
 
         # Add the task
@@ -239,13 +239,13 @@ class PyTask(object):
             self._stop_task(task_id)
         elif message == 'start':
             self._start_task(task_id)
-        elif message =='reload':
+        elif message == 'reload':
             self._reload_task(task_id)
         else:
             self.logger.warning('Unknown control command: {0}'.format(message))
 
     def _stop_task(self, task_id):
-        '''Stops a task and kills/removes the greenlet'''
+        '''Stops a task and kills/removes the greenlet.'''
         if self.tasks[task_id]._state == 'STOPPED': return
         self.logger.debug('Stopping task: {0}'.format(task_id))
 
@@ -259,8 +259,8 @@ class PyTask(object):
         self.redis.hset(self._task_name(task_id), 'state', 'STOPPED')
 
     def _start_task(self, task_id):
-        '''Starts a task in a new greenlet'''
-        if self.tasks[task_id]._state == 'RUNNING':return
+        '''Starts a task in a new greenlet.'''
+        if self.tasks[task_id]._state == 'RUNNING': return
         self.logger.debug('Starting task: {0}'.format(task_id))
 
         greenlet = gevent.spawn(self.tasks[task_id].start)
@@ -331,7 +331,7 @@ class PyTask(object):
         self.logger.info('Task ended: {0}, state = {1}, data = {2}'.format(task_id, state, data))
 
     def _cleanup_task(self, task_id):
-        '''Cleanup tasks in Redis and/or PyTask instance, depending on _cleanup setting'''
+        '''Cleanup tasks in Redis and/or PyTask instance, depending on _cleanup setting.'''
         if self.tasks[task_id]._cleanup:
             # Delete the hash
             self.redis.delete(self._task_name(task_id))
@@ -343,19 +343,22 @@ class PyTask(object):
         else:
             self.redis.lpush(self.REDIS_END_QUEUE, task_id)
 
+        # Unsubscribe from control messages
+        self._unsubscribe('{}-control'.format(self._task_name(task_id)))
+
         # Remove internal task
         del self.tasks[task_id]
         del self.greenlets[task_id]
 
     def _get_new_tasks(self):
-        '''Check for new tasks in Redis'''
+        '''Check for new tasks in Redis.'''
         new_task_id = self.redis.rpop(self.REDIS_NEW_QUEUE)
         if new_task_id is not None:
             self._add_task(new_task_id)
             self._get_new_tasks()
 
     def _update_tasks(self):
-        '''Update RUNNING task times in Redis, handle ended tasks'''
+        '''Update RUNNING task times in Redis, handle ended tasks.'''
         update_time = time.time()
 
         for task_id, task in self.tasks.iteritems():
@@ -364,31 +367,34 @@ class PyTask(object):
             # Task still chugging along, update it's time
             self.redis.hset(self._task_name(task_id), 'last_update', update_time)
 
-
     ### Redis pubsub helpers
     def _pubsub(self):
-        '''Check for Redis pubsub messages, apply to matching pattern/channel subscriptions'''
+        '''Check for Redis pubsub messages, apply to matching pattern/channel subscriptions.'''
         while True:
             message = self.pubsub.get_message()
             if message and message['type'] == 'message':
                 if message['pattern'] in self.pattern_subscriptions:
-                    for callback in self.pattern_subscriptions[message['pattern']]:
-                        callback(message['data'])
+                    self.pattern_subscriptions[message['pattern']](message['data'])
 
                 if message['channel'] in self.channel_subscriptions:
-                    for callback in self.channel_subscriptions[message['channel']]:
-                        callback(message['data'])
+                    self.channel_subscriptions[message['channel']](message['data'])
 
                 # Check for another message
                 self._pubsub()
             gevent.sleep(.5)
 
     def _subscribe(self, callback, channel=None, pattern=None):
-        '''Subscribe to Redis pubsub messages'''
+        '''Subscribe to Redis pubsub messages.'''
         if channel is not None:
-            self.channel_subscriptions.setdefault(channel, []).append(callback)
-            self.pubsub.subscribe(channel)
+            self.channel_subscriptions[channel] = callback
 
         if pattern is not None:
-            self.pattern_subscriptions.setdefault(pattern, []).append(callback)
-            self.pubsub.psubscribe(pattern)
+            self.pattern_subscriptions[pattern] = callback
+
+    def _unsubscribe(self, channel=None, pattern=None):
+        '''Unsubscribe from Redis pubsub messages.'''
+        if channel in self.channel_subscriptions:
+            del self.channel_subscriptions[channel]
+
+        if pattern in self.pattern_subscriptions:
+            del self.pattern_subscriptions[pattern]
