@@ -11,7 +11,8 @@ import gevent
 
 
 def run_loop(function, interval):
-    '''Like setInterval, slight time drift as usual, useful in tasks as well as here'''
+    '''Like setInterval, slight time drift as usual, useful in tasks as well as here.'''
+
     while True:
         before = time.time()
         function()
@@ -22,7 +23,7 @@ def run_loop(function, interval):
 
 
 class Task(object):
-    '''An individual task base'''
+    '''An individual task base.'''
     # Internal task_id
     _id = None
     # Internal task state
@@ -38,7 +39,8 @@ class Task(object):
         self.task_data = task_data
 
     def emit(self, event, data=None):
-        '''Emit task events -> pubsub channel'''
+        '''Emit task events -> pubsub channel.'''
+
         self._redis.publish(self._channel, json.dumps({
             'event': event,
             'data': data
@@ -53,8 +55,9 @@ class Task(object):
 class PyTask(object):
     '''
     A daemon that starts/stops tasks & replicates that to a Redis instance
-    tasks can be control via Redis pubsub
+    tasks can be control via Redis pubsub.
     '''
+
     TASKS = {}
 
     # Active tasks
@@ -95,7 +98,8 @@ class PyTask(object):
 
     ### Public api
     def run(self, task_map=None):
-        '''Run pytask, basically a wrapper to handle tick count & KeyboardInterrupt'''
+        '''Run pytask, basically a wrapper to handle tick count & KeyboardInterrupt.'''
+
         if task_map:
             self.TASKS.update(task_map)
 
@@ -136,18 +140,21 @@ class PyTask(object):
                     self.redis.lpush(self.REDIS_NEW_QUEUE, task_id)
 
     def pre_start_task(self, task_name, task_data=None):
-        '''Used to start tasks on this worker (no queue), before calling .run'''
+        '''Used to start tasks on this worker (no queue), before calling .run.'''
+
         if task_data is None:
             task_data = {}
 
         self.pre_start_tasks.append((task_name, task_data))
 
     def add_task(self, task_class):
-        '''Add a task class'''
+        '''Add a task class.'''
+
         self.TASKS[task_class.NAME] = task_class
 
     def add_exception_handler(self, handler):
-        '''Add an exception handler'''
+        '''Add an exception handler.'''
+
         self.exception_handlers.append(handler)
 
     ### Internal task management
@@ -158,7 +165,8 @@ class PyTask(object):
         )
 
     def _pre_start_task(self, task_name, task_data):
-        '''Starts a task on *this* worker'''
+        '''Starts a task on *this* worker.'''
+
         # Generate task_id
         task_id = str(uuid4())
         self.pre_start_task_ids.append(task_id)
@@ -174,14 +182,18 @@ class PyTask(object):
         self._add_task(task_id)
 
     def _add_task(self, task_id):
-        '''Interally add a task from the new-task queue'''
+        '''Interally add a task from the new-task queue.'''
+
         self.logger.debug('New task: {0}'.format(task_id))
 
         # Read the task hash
-        task_class, task_data, cleanup = self.redis.hmget(self._task_name(task_id), ['task', 'data', 'cleanup'])
+        task_class, task_data, cleanup = self.redis.hmget(
+            self._task_name(task_id), ['task', 'data', 'cleanup']
+        )
 
         # No cleanup = PyTask default
         cleanup = self.cleanup_tasks if cleanup is None else cleanup == 'true'
+
         if task_data is None:
             task_data = {}
 
@@ -193,9 +205,10 @@ class PyTask(object):
         try:
             task = self.TASKS[task_class](**json.loads(task_data))
         except Exception as e:
-            self.logger.critical('Task {0} failed to initialize with exception: {1}'.format(
-                task_class, e
-            ))
+            self.logger.critical(
+                'Task {0} failed to initialize with exception: {1}'.format(task_class, e)
+            )
+
             # Set Redis data
             self.redis.hmset(self._task_name(task_id), {
                 'state': 'EXCEPTION',
@@ -224,8 +237,8 @@ class PyTask(object):
 
         # Subscribe to control channel
         self._subscribe(
-            lambda message: self._control_task(task_id, message),
-            channel='{}-control'.format(self._task_name(task_id))
+            '{}-control'.format(self._task_name(task_id)),
+            lambda message: self._control_task(task_id, message)
         )
 
         # Assign the task internally & pass to _start_task
@@ -234,7 +247,8 @@ class PyTask(object):
         self.logger.info('Task {0} added with ID {1}'.format(task_class, task_id))
 
     def _control_task(self, task_id, message):
-        '''Handle control pubsub messages'''
+        '''Handle control pubsub messages.'''
+
         if message == 'stop':
             self._stop_task(task_id)
         elif message == 'start':
@@ -246,7 +260,10 @@ class PyTask(object):
 
     def _stop_task(self, task_id):
         '''Stops a task and kills/removes the greenlet.'''
-        if self.tasks[task_id]._state == 'STOPPED': return
+
+        if self.tasks[task_id]._state == 'STOPPED':
+            return
+
         self.logger.debug('Stopping task: {0}'.format(task_id))
 
         # Stop the task
@@ -260,7 +277,10 @@ class PyTask(object):
 
     def _start_task(self, task_id):
         '''Starts a task in a new greenlet.'''
-        if self.tasks[task_id]._state == 'RUNNING': return
+
+        if self.tasks[task_id]._state == 'RUNNING':
+            return
+
         self.logger.debug('Starting task: {0}'.format(task_id))
 
         greenlet = gevent.spawn(self.tasks[task_id].start)
@@ -273,7 +293,8 @@ class PyTask(object):
         self.redis.hset(self._task_name(task_id), 'state', 'RUNNING')
 
     def _reload_task(self, task_id):
-        '''Reload a tasks data by stopping/re-init-ing/starting'''
+        '''Reload a tasks data by stopping/re-init-ing/starting.'''
+
         self.logger.debug('Reloading task: {0}'.format(task_id))
         self._stop_task(task_id)
 
@@ -285,8 +306,10 @@ class PyTask(object):
         self._start_task(task_id)
 
     def _on_task_exception(self, task_id, greenlet):
-        '''Handle exceptions in running tasks'''
-        if self.tasks[task_id]._state == 'EXCEPTION': return
+        '''Handle exceptions in running tasks.'''
+
+        if self.tasks[task_id]._state == 'EXCEPTION':
+            return
 
         # Set error state
         self.tasks[task_id]._state = 'EXCEPTION'
@@ -304,11 +327,15 @@ class PyTask(object):
 
         # Cleanup
         self._cleanup_task(task_id)
-        self.logger.warning('Exception in task: {0}: {1}'.format(task_id, greenlet.exception))
+        self.logger.warning(
+            'Exception in task: {0}: {1}'.format(task_id, greenlet.exception)
+        )
 
     def _on_task_end(self, task_id, greenlet):
-        '''Handle tasks which have ended properly, either with success or failure'''
-        if self.tasks[task_id]._state == 'STOPPED': return
+        '''Handle tasks which have ended properly, either with success or failure.'''
+
+        if self.tasks[task_id]._state == 'STOPPED':
+            return
 
         return_values = greenlet.get(block=False)
         if isinstance(return_values, tuple):
@@ -331,7 +358,9 @@ class PyTask(object):
         self.logger.info('Task ended: {0}, state = {1}, data = {2}'.format(task_id, state, data))
 
     def _cleanup_task(self, task_id):
-        '''Cleanup tasks in Redis and/or PyTask instance, depending on _cleanup setting.'''
+        '''
+        Cleanup tasks in Redis and/or PyTask instance, depending on _cleanup setting.
+        '''
         if self.tasks[task_id]._cleanup:
             # Delete the hash
             self.redis.delete(self._task_name(task_id))
@@ -352,6 +381,7 @@ class PyTask(object):
 
     def _get_new_tasks(self):
         '''Check for new tasks in Redis.'''
+
         new_task_id = self.redis.rpop(self.REDIS_NEW_QUEUE)
         if new_task_id is not None:
             self._add_task(new_task_id)
@@ -359,42 +389,43 @@ class PyTask(object):
 
     def _update_tasks(self):
         '''Update RUNNING task times in Redis, handle ended tasks.'''
+
         update_time = time.time()
 
         for task_id, task in self.tasks.iteritems():
-            if task._state != 'RUNNING': continue
+            if task._state != 'RUNNING':
+                continue
 
             # Task still chugging along, update it's time
             self.redis.hset(self._task_name(task_id), 'last_update', update_time)
 
     ### Redis pubsub helpers
     def _pubsub(self):
-        '''Check for Redis pubsub messages, apply to matching pattern/channel subscriptions.'''
+        '''
+        Check for Redis pubsub messages, apply to matching pattern/channel subscriptions.
+        '''
         while True:
             message = self.pubsub.get_message()
-            if message and message['type'] == 'message':
-                if message['pattern'] in self.pattern_subscriptions:
-                    self.pattern_subscriptions[message['pattern']](message['data'])
-
-                if message['channel'] in self.channel_subscriptions:
-                    self.channel_subscriptions[message['channel']](message['data'])
+            if (
+                message and message['type'] == 'message'
+                and message['channel'] in self.channel_subscriptions
+            ):
+                self.channel_subscriptions[message['channel']](message['data'])
 
                 # Check for another message
                 self._pubsub()
+
             gevent.sleep(.5)
 
-    def _subscribe(self, callback, channel=None, pattern=None):
+    def _subscribe(self, channel, callback):
         '''Subscribe to Redis pubsub messages.'''
-        if channel is not None:
-            self.channel_subscriptions[channel] = callback
 
-        if pattern is not None:
-            self.pattern_subscriptions[pattern] = callback
+        self.channel_subscriptions[channel] = callback
+        self.pubsub.subscribe(channel)
 
-    def _unsubscribe(self, channel=None, pattern=None):
+    def _unsubscribe(self, channel):
         '''Unsubscribe from Redis pubsub messages.'''
-        if channel in self.channel_subscriptions:
-            del self.channel_subscriptions[channel]
 
-        if pattern in self.pattern_subscriptions:
-            del self.pattern_subscriptions[pattern]
+        if channel in self.channel_subscriptions:
+            self.pubsub.unsubscribe(channel)
+            del self.channel_subscriptions[channel]
