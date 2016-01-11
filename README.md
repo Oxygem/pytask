@@ -1,129 +1,95 @@
 # pytask
 
-A simple Python task daemon for asynchronous IO bound tasks, based on greenlets. Support for distributed/HA setups.
+A simple asynchronous Python daemon for IO bound tasks, based on greenlets. Uses Redis or
+Redis Cluster to store state; workers are stateless. Included `Monitor` and `Cleanup`
+tasks to handle failure of workers.
 
 
 ## Synopsis
 
 ```py
-import redis
 from pytask import PyTask, Task
 
-# Create pytask and pass it a Redis instance
-task_app = PyTask(redis.StrictRedis())
+# Create a pytask instance
+task_app = PyTask(('localhost', 6379))
 
-# A custom task
+# Define a task
 class MyTask(Task):
-    class Config:
-        NAME = 'test-task'
+    # Used to create tasks of this type
+    NAME = 'test-task'
 
     # Configure/prepare the task
     def __init__(self, **task_data):
-        self.text = task_data.pop('text', 'hello world')
+        self.text = task_data.get('text', 'hello world')
 
     # Start the task
     def start(self):
         print self.text
 
+# Add the task to pytask, and run the worker!
 task_app.add_task(MyTask)
 task_app.run()
 ```
 
-To start tasks, set the task name and some JSON task_data to the task has and push the task_id to the queue:
+To start tasks create an identifier like `TASK_ID`, save the `task` and some JSON `data` to the
+task hash and push the `TASK_ID` to the queue:
 
 ```sh
-redis-cli> HSET task-<task_id> task <task_name>
-redis-cli> HSET task-<task_id> data <task_data>
-redis-cli> LPUSH new-task <task_id>
+redis-cli> HSET task-TASK_ID task test-task
+redis-cli> HSET task-TASK_ID data '{"text": "Not hello world"}'
+redis-cli> LPUSH new-task TASK_ID
 ```
 
 Check out the [full example](./example/).
 
 
-## Watching & controlling tasks via Redis pub/sub
+## Interact with tasks via Redis pub/sub
 
-Tasks can be stopped, started & reloaded via pub/sub. Tasks can also emit events to pub/sub so progress can be watched externally:
+Tasks emit events which can be subscribed to with Redis, see `Task.emit` to generate your own
+events. Tasks can also be stopped & reloaded by publishing to Redis.
 
 ```sh
-# To control tasks
-redis-cli> PUBLISH task-<task_id>-control [stop|start|reload]
-
 # To watch tasks
 redis-cli> SUBSCRIBE task-<task_id>
 
 # To watch all tasks:
 redis-cli> PSUBSCRIBE task-*
+
+# To control tasks
+redis-cli> PUBLISH task-<task_id>-control [stop|reload]
 ```
 
 Task events are sent as a JSON object, with `event` and `data` keys.
 
 
-## Ending tasks
+## Task Cleanup
 
-When a task completes it's state is set to `ENDED` or `ERROR` depending on the return values. A task can either return one or two values. A single value results in the tasks state being set (`None|True` -> `ENDED` or `False` -> `ERROR`). A second return value means the state is set the same, but the second argument is placed into the task's hash with key `end_data`.
+When a task ends, it falls into one of the following states:
 
-### Cleaning up tasks
++ `SUCCESS`
++ `ERROR`
++ `EXCEPTION`
 
-By default, PyTask does not cleanup tasks from Redis, instead pushing the `task_id` to the end queue for cleanup by a separate application. You can configure PyTask and each task individually to cleanup upon completion. To make a task cleanup itself on a PyTask instance not configured to do so, simply set the task hash `cleanup` key to `true`.
+In any of these states, there will also be an `output` key in the tasks hash, containing any
+JSON data from the task/exception. The task IDs will also be pushed to the `end-task` queue.
+
+See the `Cleanup` task for automatic cleanup of task data, or the `PyTask.helpers.cleanup_task`
+method.
 
 
-## Monitoring tasks
+## Monitor/Cleanup & Clustering
 
-pytask includes a task for doing this:
+pytask workers are stateless, meaning they can be "clustered" alongside a Redis cluster. Two
+tasks are included which ensure failed tasks and restarted and cleaned up. Normally every worker
+starts these tasks locally (all workers effectively monitor each others & own tasks):
 
 ```py
-...
-from pytask import Monitor
-...
-task_app.add_task(Monitor)
-task_app.pre_start_task('pytask/monitor')
+from pytask import Monitor, Cleanup
+
+task_app.add_tasks(Monitor, Cleanup)
+
+task_app.start_local_task('pytask/monitor')
+task_app.start_local_task('pytask/cleanup')
+
 task_app.run()
 ```
-
-
-### Exception handling
-
-To add exception handlers to PyTask, call `pytask.add_exception_handler(handler)`. The handler will be called with the exception object.
-
-
-## Redis keys
-
-Defaults below, see `PyTask.__init__` for customization:
-
-+ Task set = `tasks` - a set of all current task_id's
-+ Task prefix = `task-` - prefix to all task_id's to get the task hash key
-+ New task queue = `new-task` - where to push new task_id's after writing their hash set
-+ End task queue = `end-task` - where to read task_id's from tasks that ended (will be state `COMPLETE`, `ERROR` or `EXCEPTION`)
-
-
-## Distribution/HA
-
-pytask assumes Redis is setup in a highly-available manner (upon disconnect the worker will fail); any client compatible with pyredis will work. Assuming the rest of the pytask instances have access to Redis, and one of them is running a `Monitor` task, the stopped tasks will be requeued.
-
-
-## Internals
-
-### Task data
-
-Stored has a hash in Redis:
-
-```py
-{
-    # Required to 'create' task
-    'task': 'task_name',
-    'data': 'json_data',
-    # Created sometimes by pytask
-    'end_data': 'json_data',
-    # Internally created/used
-    'last_update': 0,
-    'state': '[RUNNING|STOPPED|COMPLETE|ERROR|EXCEPTION]'
-}
-```
-
-### Task states
-
-+ `RUNNING` - the task is active, and to be monitored
-+ `STOPPED` - the task was intentionally stopped, no monitoring occurs
-+ `COMPLETE` - the task ended successfully
-+ `ERROR` - the task ended with an error
-+ `EXCEPTION` - the task encountered an exception

@@ -6,7 +6,7 @@ from .pytask import Task
 
 
 class HelloWorld(Task):
-    NAME = 'hello_world'
+    NAME = 'hello-world'
 
     def start(self):
-        print 'HELLO {}'.format(self.task_data.get('hello', 'WORLD'))
+        print 'HELLO {0}'.format(self.task_data.get('hello', 'WORLD'))
