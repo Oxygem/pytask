@@ -17,6 +17,7 @@ class Loop(Task):
         '''Spawn a loop to do some work on the interval.'''
 
         self.loop = run_loop(self.work, self.loop_interval)
+        self.loop.join()
 
     def stop(self):
         '''Stop the loop when requested.'''

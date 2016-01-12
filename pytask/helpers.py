@@ -1,0 +1,115 @@
+# pytask
+# File: pytask/helpers.py
+# Desc: helpers for interfacing with a pytask/Redis cluster
+
+from time import time
+from uuid import uuid4
+
+import gevent
+
+
+def run_loop(function, interval):
+    '''
+    Like JavaScripts ``setInterval``, slight time drift as usual, useful in long running
+    tasks.
+    '''
+
+    while True:
+        before = time()
+        function()
+
+        duration = time() - before
+        if duration < interval:
+            gevent.sleep(interval - duration)
+
+
+class PyTaskRedisConf(object):
+    def __init__(self, redis_instance,
+        task_set='tasks', task_prefix='task-', new_queue='new-task', end_queue='end-task'
+    ):
+        # If redis_instance is a list, make a client
+        if isinstance(redis_instance, list):
+            if len(redis_instance) == 1:
+                from redis import StrictRedis as RedisClient
+            else:
+                from rediscluster import StrictRedisClient as RedisClient
+
+            redis_instance = RedisClient(redis_instance)
+
+        self.redis = redis_instance
+
+        self.TASK_SET = task_set
+        self.TASK_PREFIX = task_prefix
+        self.NEW_QUEUE = new_queue
+        self.END_QUEUE = end_queue
+
+    def task_key(self, task_id):
+        return '{0}{1}'.format(self.TASK_PREFIX, task_id)
+
+    def task_control(self, task_id):
+        return '{0}{1}-control'.format(self.TASK_PREFIX, task_id)
+
+
+class PyTaskHelpers(PyTaskRedisConf):
+    '''
+    Helper functions for managing task data within Redis. All ``PyTask`` instances have
+    an instance attached on their ``helpers`` attribute.
+    '''
+
+    def get_task_ids(self):
+        '''Get a list of active ``task_ids``.'''
+
+        return self.redis.smembers(self.TASK_SET)
+
+    def get_task(self, task_id, keys=None):
+        '''Get task hash data.'''
+
+        task_key = self.task_key(task_id)
+
+        if keys:
+            # Getting a single has key
+            if isinstance(keys, basestring):
+                return self.redis.hget(task_key, keys)
+
+            # Multiple hash keys, returned in order
+            return self.redis.hmget(task_key, keys)
+
+        else:
+            # The whole hash object, as dict
+            return self.redis.hgetall(task_key)
+
+    def set_task(self, task_id, data, value=None):
+        '''Set task hash data.'''
+
+        if value:
+            self.redis.hset(self.task_key(task_id), data, value)
+        else:
+            self.redis.hmset(self.task_key(task_id), data)
+
+    def reload_task(self, task_id):
+        '''Reload a task.'''
+
+        self.redis.publish(self.task_control(task_id), 'reload')
+
+    def stop_task(self, task_id):
+        '''Stop a task.'''
+
+        self.redis.publish(self.task_control(task_id), 'stop')
+
+    def start_task(self, task_name, task_data, task_id=None):
+        '''Start a new task.'''
+
+        # task_id None implies a short running task, thus no option in start_update
+        if task_id is None:
+            task_id = str(uuid4())
+
+        # Add the task & data to the task hash
+        self.set_task(task_id, {
+            'task': task_name,
+            'data': task_data
+        })
+
+        # Push the task ID to the new queue
+        self.redis.lpush(self.NEW_QUEUE, task_id)
+
+        return task_id
