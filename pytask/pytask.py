@@ -4,6 +4,7 @@
 
 import json
 import logging
+import traceback
 from time import time
 from uuid import uuid4
 
@@ -193,23 +194,11 @@ class PyTask(PyTaskRedisConf):
 
         # Create task instance, assign it Redis
         try:
-            task = self._task_classes[task_class](**json.loads(task_data))
+            data = json.loads(task_data)
+            task = self._task_classes[task_class](**data)
 
         except Exception as e:
-            self.logger.critical(
-                'Task {0} failed to initialize with exception: {1}'.format(task_class, e)
-            )
-
-            # Set Redis data
-            self.helpers.set_task(task_id, {
-                'state': 'EXCEPTION',
-                'output': str(e)
-            })
-
-            # Run exception handlers
-            for handler in self._exception_handlers:
-                handler(e)
-
+            self._on_task_exception(task_id, e)
             return
 
         task._id = task_id
@@ -258,9 +247,14 @@ class PyTask(PyTaskRedisConf):
         greenlet = gevent.spawn(task.start)
 
         # Handle task complete
-        greenlet.link(lambda glet: self._on_task_success(task_id, glet))
+        greenlet.link(lambda glet: (
+            self._on_task_success(task_id, glet.get(block=False))
+        ))
+
         # And task error & exceptions
-        greenlet.link_exception(lambda glet: self._on_task_exception(task_id, glet))
+        greenlet.link_exception(lambda glet: (
+            self._on_task_exception(task_id, glet.exception)
+        ))
 
         self._task_greenlets[task_id] = greenlet
 
@@ -277,15 +271,8 @@ class PyTask(PyTaskRedisConf):
         # Stop the task
         task.stop()
 
-        # End it's greenlet
-        self._task_greenlets[task_id].kill()
-
-        # Reload task data from Redis
-        task_data = self.helpers.get_task(task_id, 'data')
-
-        # Re-init & start the task
-        task.__init__(**json.loads(task_data))
-        self._start_task(task_id)
+        # Now re-start it
+        self._add_task(task_id)
 
     def _stop_task(self, task_id):
         '''Stops a task and kills/removes the greenlet.'''
@@ -314,55 +301,54 @@ class PyTask(PyTaskRedisConf):
                 state.lower().title(), task_id, output)
             )
 
-        task = self._tasks[task_id]
-
-        # Set internal & Redis state
-        task._state = state
+        # Redis state
         self.helpers.set_task(task_id, {
             'state': state,
             'output': output
         })
 
-        # Emit the event
-        task.emit(state.lower(), output)
+        # If we failed on init task, it won't exist
+        task = self._tasks.get(task_id)
+        if task:
+            # Set the state
+            task._state = state
 
-    def _on_task_exception(self, task_id, greenlet):
+            # Emit the event
+            task.emit(state.lower(), output)
+
+    def _on_task_exception(self, task_id, exception):
         '''Handle exceptions in running tasks.'''
 
         # If this is an Error exception, ie raised by the task, handle as such
-        if isinstance(greenlet.exception, Task.Error):
-            return self._on_task_error(task_id, greenlet)
+        if isinstance(exception, Task.Error):
+            return self._on_task_error(task_id, exception)
 
-        data = unicode(greenlet.exception)
+        trace = traceback.format_exc()
 
         self._handle_end_task(
-            task_id, 'EXCEPTION', data,
+            task_id, 'EXCEPTION', trace,
             log_func=self.logger.warning
         )
 
         # Run exception handlers
         for handler in self._exception_handlers:
-            handler(greenlet.exception)
+            handler(exception)
 
         # Cleanup
         self._cleanup_task(task_id)
 
-    def _on_task_error(self, task_id, greenlet):
+    def _on_task_error(self, task_id, exception):
         '''Handle tasks which have raised a ``Task.Error``.'''
 
-        data = greenlet.exception.message
-
         self._handle_end_task(
-            task_id, 'error', data,
+            task_id, 'ERROR', exception.message,
             log_func=self.logger.info
         )
 
         self._cleanup_task(task_id)
 
-    def _on_task_success(self, task_id, greenlet):
+    def _on_task_success(self, task_id, data):
         '''Handle tasks which have ended successfully.'''
-
-        data = greenlet.get(block=False)
 
         self._handle_end_task(
             task_id, 'SUCCESS', data,
@@ -379,9 +365,13 @@ class PyTask(PyTaskRedisConf):
         # Unsubscribe from control messages
         self._unsubscribe(self.task_control(task_id))
 
-        # Remove internal task
-        del self._tasks[task_id]
-        del self._task_greenlets[task_id]
+        if task_id in self._tasks:
+            # Stop any running greenlet
+            self._task_greenlets[task_id].kill()
+
+            # Remove internal task
+            del self._tasks[task_id]
+            del self._task_greenlets[task_id]
 
         if enqueue:
             # Delete the task_id from the "active" set
