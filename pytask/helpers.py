@@ -2,6 +2,7 @@
 # File: pytask/helpers.py
 # Desc: helpers for interfacing with a pytask/Redis cluster
 
+import json
 from time import time
 from uuid import uuid4
 
@@ -103,10 +104,15 @@ class PyTaskHelpers(PyTaskRedisConf):
         if task_id is None:
             task_id = str(uuid4())
 
+        # Ensure we're JSON encoded
+        if not isinstance(task_data, basestring):
+            task_data = json.dumps(task_data)
+
         # Add the task & data to the task hash
         self.set_task(task_id, {
             'task': task_name,
-            'data': task_data
+            'data': task_data,
+            'state': 'WAIT'
         })
 
         # Push the task ID to the new queue
