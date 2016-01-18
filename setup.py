@@ -1,12 +1,8 @@
-#!/usr/bin/env python
-
+# pytask
 # File: setup.py
 # Desc: needed
 
-try:
-    from setuptools import setup
-except ImportError:
-    from distutils.core import setup
+from setuptools import setup
 
 
 setup(
@@ -16,5 +12,9 @@ setup(
     author='Nick Barrett',
     author_email='nick@oxygem.com',
     url='http://github.com/Oxygem/pytask',
-    py_modules=['pytask']
+    packages=('pytask',),
+    package_dir={'pytask': 'pytask'},
+    install_requires=(
+        'gevent',
+    )
 )
