@@ -4,6 +4,7 @@
 
 import logging
 from time import time
+from importlib import import_module
 
 import gevent
 
@@ -19,9 +20,9 @@ class Monitor(Task):
 
     NAME = 'pytask/monitor'
 
-    def __init__(self, **task_data):
-        self.loop_interval = task_data.get('loop_interval', 10)
-        self.task_timeout = task_data.get('task_timeout', 60)
+    def __init__(self, loop_interval=10, task_timeout=60):
+        self.loop_interval = loop_interval
+        self.task_timeout = task_timeout
 
         self.logger = logging.getLogger('pytask-monitoring')
 
@@ -74,38 +75,20 @@ class Cleanup(Task):
 
     NAME = 'pytask/cleanup'
 
-    def __init__(self, **task_data):
-        self.loop_interval = task_data.get('loop_interval', 60)
+    def __init__(self, task_handler=None):
+        if task_handler:
+            module, attr = task_handler.split(':')
+            self.task_handler = getattr(import_module(module), attr)
 
         self.logger = logging.getLogger('pytask-cleaning')
 
     def start(self):
-        self.loop = gevent.spawn(run_loop, self.cleanup_tasks, self.loop_interval)
-        self.loop.get()
-
-    def stop(self):
-        self.loop.kill()
-
-    def cleanup_tasks(self):
-        self.logger.info('Cleaning tasks...')
-
-        task_ids = self.helpers.get_task_ids()
-
-        for task_id in task_ids:
+        while True:
+            task_id = self.redis.brpop(self.helpers.END_QUEUE)
             task = self.helpers.get_task(task_id)
 
-            if not task:
-                self.logger.critical(
-                    'Removing task ID in set but no hash!: {0}'.format(task_id)
-                )
-                self.helpers.remove_task(task_id)
-                continue
+            self.logger.info('Cleaning {0} task: {1}'.format(task.get('state'), task_id))
+            self.helpers.remove_task(task_id)
 
-            state = task.get('state')
-            if state != 'RUNNING':
-                self.logger.warning(
-                    'Task {0} is {1} but in the task set, removing ID from set'.format(
-                        task_id, state
-                    )
-                )
-                self.redis.srem(self.helpers.TASK_SET, task_id)
+            if self.task_handler:
+                self.task_handler(task_id, task)
