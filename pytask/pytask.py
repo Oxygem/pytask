@@ -76,6 +76,12 @@ class PyTask(PyTaskRedisConf):
         # Custom exception handlers
         self._exception_handlers = []
 
+    class PyTaskException(Exception):
+        pass
+
+    class StopTask(PyTaskException):
+        pass
+
     # Public api
     #
 
@@ -101,8 +107,8 @@ class PyTask(PyTaskRedisConf):
         # Start reading from Redis pubsub
         pubsub_loop = gevent.spawn(self._pubsub)
 
-        # This is where we handle Redis failures
-        restart = False
+        # Flag for handling Redis failure
+        redis_is_down = False
 
         try:
             # Kick off any _local_tasks
@@ -125,9 +131,7 @@ class PyTask(PyTaskRedisConf):
         # Redis has failed us - but we don't want the worker to completely fail, just
         # to reset & hibernate until Redis returns
         except RedisConnectionError:
-            self.logger.debug('Waiting for Redis...')
-            self._wait_for_redis()
-            restart = True
+            redis_is_down = True
 
         # Handle normal SIGINT exit - requeue anything running
         except KeyboardInterrupt:
@@ -135,6 +139,9 @@ class PyTask(PyTaskRedisConf):
 
             # Stop & requeue all running tasks (for another worker/etc)
             for task_id in self._tasks.keys():
+                if self._tasks[task_id]._state != 'RUNNING':
+                    continue
+
                 # Stop the task
                 self._stop_task(task_id)
 
@@ -147,17 +154,24 @@ class PyTask(PyTaskRedisConf):
                     self.logger.info('Requeuing task: {0}'.format(task_id))
                     self.redis.lpush(self.NEW_QUEUE, task_id)
 
-        # Always cleanup the workers, whether SIGINT or some other crash
+        # Always cleanup, whether SIGINT, Redis or some other crash
         finally:
+            self.logger.debug('Killing tasks...')
+            for task_id in self._tasks.keys():
+                self._cleanup_task(task_id, enqueue=False)
+
             self.logger.debug('Killing workers...')
             new_task_loop.kill()
             pubsub_loop.kill()
             task_update_loop.kill()
 
-        # Now all the workers are cleaned up, do we restart?
-        if restart:
+        # Is Redis down? Wait for it and restart
+        if redis_is_down:
+            self.logger.debug('Waiting for Redis...')
+            self._wait_for_redis()
+
+            # Reset internal state & run
             self.logger.debug('Restarting instance...')
-            # Reset internal state
             self.__clean_state__()
             self.run()
 
@@ -298,7 +312,7 @@ class PyTask(PyTaskRedisConf):
         greenlet = gevent.spawn(task.start)
 
         # Handle task complete
-        greenlet.link(lambda glet: (
+        greenlet.link_value(lambda glet: (
             self._on_task_success(task_id, glet.get(block=False))
         ))
 
@@ -317,10 +331,9 @@ class PyTask(PyTaskRedisConf):
         '''Reload a tasks data by stopping/re-init-ing/starting.'''
 
         self.logger.debug('Reloading task: {0}'.format(task_id))
-        task = self._tasks[task_id]
 
         # Stop the task
-        task.stop()
+        self._stop_task(task_id)
 
         # Now re-start it
         self._add_task(task_id)
@@ -331,15 +344,16 @@ class PyTask(PyTaskRedisConf):
         self.logger.debug('Stopping task: {0}'.format(task_id))
         task = self._tasks[task_id]
 
+        # Set STOPPED in task & Redis *before* we stop the task - stopping the task will
+        # trigger either _on_task_exception or _on_task_success
+        task._state = 'STOPPED'
+        self.helpers.set_task(task_id, 'state', 'STOPPED')
+
         # Stop the task
         task.stop()
 
         # End it's greenlet
-        self._task_greenlets[task_id].kill()
-
-        # Set STOPPED in task & Redis
-        task._state = 'STOPPED'
-        self.helpers.set_task(task_id, 'state', 'STOPPED')
+        self._task_greenlets[task_id].kill(exception=self.StopTask)
 
         # Cleanup internal Task, but don't push to the end queue
         self._cleanup_task(task_id, enqueue=False)
@@ -369,6 +383,10 @@ class PyTask(PyTaskRedisConf):
 
     def _on_task_exception(self, task_id, exception):
         '''Handle exceptions in running tasks.'''
+
+        # Completely ignore stopping tasks
+        if isinstance(exception, self.StopTask):
+            return
 
         # If this is an Error exception, ie raised by the task, handle as such
         if isinstance(exception, Task.Error):
@@ -401,6 +419,10 @@ class PyTask(PyTaskRedisConf):
     def _on_task_success(self, task_id, data):
         '''Handle tasks which have ended successfully.'''
 
+        # Ignore STOPPED tasks
+        if task_id not in self._tasks or self._tasks[task_id]._state == 'STOPPED':
+            return
+
         self._handle_end_task(
             task_id, 'SUCCESS', data,
             log_func=self.logger.info
@@ -418,7 +440,7 @@ class PyTask(PyTaskRedisConf):
 
         if task_id in self._tasks:
             # Stop any running greenlet
-            self._task_greenlets[task_id].kill()
+            self._task_greenlets[task_id].kill(exception=self.StopTask)
 
             # Remove internal task
             del self._tasks[task_id]
@@ -494,5 +516,12 @@ class PyTask(PyTaskRedisConf):
         '''Unsubscribe from Redis pubsub messages.'''
 
         if channel in self._channel_subscriptions:
-            self.pubsub.unsubscribe(channel)
+            # This has to be resiliant to Redis connection failure as will be called
+            # when removing tasks upon Redis failure (in which case, we just want to kill
+            # the callback).
+            try:
+                self.pubsub.unsubscribe(channel)
+            except RedisConnectionError:
+                pass
+
             del self._channel_subscriptions[channel]
