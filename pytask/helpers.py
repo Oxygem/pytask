@@ -108,6 +108,13 @@ class PyTaskHelpers(PyTaskRedisConf):
         if state in states:
             self.restart_task(task_id)
 
+    def remove_task(self, task_id):
+        # Delete from the set
+        self.redis.srem(self.TASK_SET, task_id)
+
+        # Remove the hash
+        self.redis.delete(self.task_key(task_id))
+
     def start_task(self, task_name, task_data, task_id=None):
         '''Start a new task.'''
 

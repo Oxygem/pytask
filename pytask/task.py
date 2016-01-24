@@ -14,11 +14,12 @@ class Task(object):
     # Internal task state
     _state = 'WAIT'
 
-    # Redis object
-    _redis = None
-
     # & channel name
     _channel = None
+
+    # Redis & helpers public objects
+    redis = None
+    helpers = None
 
     class Error(Exception):
         '''An exception which, when raised, puts this task in the ``ERROR`` state.'''
@@ -35,7 +36,7 @@ class Task(object):
     def emit(self, event, data=None):
         '''Emit task events -> pubsub channel.'''
 
-        self._redis.publish(self._channel, json.dumps({
+        self.redis.publish(self._channel, json.dumps({
             'event': event,
             'data': data
         }))

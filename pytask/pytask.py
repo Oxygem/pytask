@@ -266,13 +266,12 @@ class PyTask(PyTaskRedisConf):
             return
 
         task._id = task_id
-        task._redis = self.redis
         # Publishing channel is the task id
         task._channel = self.task_key(task_id)
 
-        # Add to Redis set if normal task
-        if task_id not in self._local_task_ids:
-            self.redis.sadd(self.TASK_SET, task_id)
+        # Assign Redis/helpers references from self
+        task.redis = self.redis
+        task.helpers = self.helpers
 
         # Set Redis data
         self.helpers.set_task(task_id, {
@@ -285,6 +284,10 @@ class PyTask(PyTaskRedisConf):
             self.task_control(task_id),
             lambda message: self._control_task(task_id, message)
         )
+
+        # Add to Redis set if normal task
+        if task_id not in self._local_task_ids:
+            self.redis.sadd(self.TASK_SET, task_id)
 
         # Assign the task internally & pass to _start_task
         self._tasks[task_id] = task
