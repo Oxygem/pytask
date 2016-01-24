@@ -4,6 +4,8 @@ A simple asynchronous Python daemon for IO bound tasks, based on greenlets. Uses
 Redis Cluster to store state; workers are stateless. Included `Monitor` and `Cleanup`
 tasks to handle failure of workers.
 
++ [Documentation](https://pytask.readthedocs.org)
+
 
 ## Synopsis
 
