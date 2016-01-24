@@ -35,10 +35,7 @@ class PyTask(PyTaskRedisConf):
         update_task_interval (int): interval in s to update task times
     '''
 
-    def __init__(self, redis_instance,
-        new_task_interval=1, update_task_interval=5,
-        **kwargs
-    ):
+    def __init__(self, redis_instance, update_task_interval=5, **kwargs):
         # Set Redis config
         super(PyTask, self).__init__(redis_instance, **kwargs)
 
@@ -52,12 +49,12 @@ class PyTask(PyTaskRedisConf):
         self.logger = logging.getLogger('pytask')
 
         # Config
-        self.new_task_interval = new_task_interval
         self.update_task_interval = update_task_interval
 
         # Not included in fresh state, such that local tasks are restarted when Redis
         # connection is restored, and task classes don't go missing
         self._local_tasks = []
+        self._local_task_ids = set()
         self._task_classes = {}
 
         # Setup a fresh state, enabling instance to handle Redis down, reset and restart
@@ -69,9 +66,6 @@ class PyTask(PyTaskRedisConf):
         # Active tasks & greenlets
         self._tasks = {}
         self._task_greenlets = {}
-
-        # Local task IDs
-        self._local_task_ids = []
 
         # Custom exception handlers
         self._exception_handlers = []
@@ -95,9 +89,7 @@ class PyTask(PyTaskRedisConf):
         self.logger.debug('Loaded tasks: {0}'.format(self._task_classes.keys()))
 
         # Start the get new tasks loop
-        new_task_loop = gevent.spawn(
-            run_loop, self._get_new_tasks, self.new_task_interval
-        )
+        new_task_loop = gevent.spawn(self._get_new_tasks)
 
         # Start the update task loop
         task_update_loop = gevent.spawn(
@@ -223,7 +215,7 @@ class PyTask(PyTaskRedisConf):
 
         # Generate task_id
         task_id = str(uuid4())
-        self._local_task_ids.append(task_id)
+        self._local_task_ids.add(task_id)
 
         # Write task hash to Redis
         self.helpers.set_task(task_id, {
@@ -238,7 +230,12 @@ class PyTask(PyTaskRedisConf):
     def _add_task(self, task_id):
         '''Interally add a task from the new-task queue.'''
 
-        self.logger.debug('New task: {0}'.format(task_id))
+        local = task_id in self._local_task_ids
+
+        self.logger.debug('New {0}task: {1}'.format(
+            'local ' if local else '',
+            task_id
+        ))
 
         # Read the task hash
         task_hash = self.helpers.get_task(task_id, ['task', 'data'])
@@ -286,7 +283,7 @@ class PyTask(PyTaskRedisConf):
         )
 
         # Add to Redis set if normal task
-        if task_id not in self._local_task_ids:
+        if not local:
             self.redis.sadd(self.TASK_SET, task_id)
 
         # Assign the task internally & pass to _start_task
@@ -349,6 +346,7 @@ class PyTask(PyTaskRedisConf):
 
         # Set STOPPED in task & Redis *before* we stop the task - stopping the task will
         # trigger either _on_task_exception or _on_task_success
+        self.redis.srem(self.TASK_SET, task_id)
         task._state = 'STOPPED'
         self.helpers.set_task(task_id, 'state', 'STOPPED')
 
@@ -369,7 +367,10 @@ class PyTask(PyTaskRedisConf):
                 state.lower().title(), task_id, output)
             )
 
-        # Redis state
+        # Remove from the active set
+        self.redis.srem(self.TASK_SET, task_id)
+
+        # Set state
         self.helpers.set_task(task_id, {
             'state': state,
             'output': output
@@ -450,20 +451,15 @@ class PyTask(PyTaskRedisConf):
             del self._task_greenlets[task_id]
 
         if enqueue:
-            # Delete the task_id from the "active" set
-            self.redis.srem(self.TASK_SET, task_id)
-
             # Push to the end queue
             self.redis.lpush(self.END_QUEUE, task_id)
 
     def _get_new_tasks(self):
         '''Check for new tasks in Redis.'''
 
-        new_task_id = self.redis.rpop(self.NEW_QUEUE)
-
-        if new_task_id is not None:
+        while True:
+            _, new_task_id = self.redis.brpop(self.NEW_QUEUE)
             self._add_task(new_task_id)
-            self._get_new_tasks()
 
     def _update_tasks(self):
         '''Update RUNNING task times in Redis.'''
@@ -504,7 +500,7 @@ class PyTask(PyTaskRedisConf):
 
         while True:
             # Read messages until we have no more
-            while self._get_pubsub_message() is not None:
+            while self._get_pubsub_message():
                 pass
 
             gevent.sleep(.5)
