@@ -13,3 +13,10 @@ tasks to handle failure of workers. pytask is designed distributed and :doc:`fau
     api
     writing_tasks
     fault_tolerance
+
+
+.. toctree::
+    :hidden:
+    :caption: Elsewhere
+
+    pytask on GitHub <http://github.com/Oxygem/pytask>
