@@ -25,8 +25,10 @@ def run_loop(function, interval):
 
 
 class PyTaskRedisConf(object):
-    def __init__(self, redis_instance,
-        task_set='tasks', task_prefix='task-', new_queue='new-task', end_queue='end-task'
+    def __init__(
+        self, redis_instance,
+        task_set='tasks', task_prefix='task-',
+        new_queue='new-task', end_queue='end-task'
     ):
         # If redis_instance is a list, make a client
         if isinstance(redis_instance, list):
@@ -96,6 +98,15 @@ class PyTaskHelpers(PyTaskRedisConf):
         '''Stop a task.'''
 
         self.redis.publish(self.task_control(task_id), 'stop')
+
+    def restart_task(self, task_id):
+        self.redis.lpush(self.NEW_QUEUE, task_id)
+
+    def restart_if_state(self, task_id, states):
+        state = self.get_task(task_id, 'state')
+
+        if state in states:
+            self.restart_task(task_id)
 
     def start_task(self, task_name, task_data, task_id=None):
         '''Start a new task.'''
