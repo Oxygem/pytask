@@ -26,7 +26,7 @@ class Monitor(Task):
 
     def start(self):
         self.loop = gevent.spawn(run_loop, self.check_tasks, self.loop_interval)
-        self.loop.join()
+        self.loop.get()
 
     def stop(self):
         self.loop.kill()
@@ -51,7 +51,7 @@ class Cleanup(Task):
 
     def start(self):
         self.loop = gevent.spawn(run_loop, self.cleanup_tasks, self.loop_interval)
-        self.loop.join()
+        self.loop.get()
 
     def stop(self):
         self.loop.kill()
