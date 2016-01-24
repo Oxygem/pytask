@@ -9,6 +9,7 @@ from time import time
 from uuid import uuid4
 
 import gevent
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from .task import Task
 from .helpers import run_loop, PyTaskHelpers, PyTaskRedisConf
@@ -34,26 +35,6 @@ class PyTask(PyTaskRedisConf):
         update_task_interval (int): interval in s to update task times
     '''
 
-    _task_classes = {}
-
-    # Active tasks
-    _tasks = {}
-
-    # Task greenlets (id -> greenlet)
-    _task_greenlets = {}
-
-    # Local tasks
-    _local_tasks = []
-    _local_task_ids = []
-
-    # Pubsub
-    _channel_subscriptions = {}
-
-    # Custom exception handlers
-    _exception_handlers = []
-
-    logger = logging.getLogger('pytask')
-
     def __init__(self, redis_instance,
         new_task_interval=1, update_task_interval=5,
         **kwargs
@@ -61,15 +42,39 @@ class PyTask(PyTaskRedisConf):
         # Set Redis config
         super(PyTask, self).__init__(redis_instance, **kwargs)
 
+        # Create helpers instance with related Redis config
+        self.helpers = PyTaskHelpers(redis_instance, **kwargs)
+
+        # Redis Pubsub
+        self.pubsub = self.redis.pubsub()
+
+        # Logging
+        self.logger = logging.getLogger('pytask')
+
+        # Config
         self.new_task_interval = new_task_interval
         self.update_task_interval = update_task_interval
 
-        # Setup Redis pubsub
-        self.pubsub = self.redis.pubsub()
-        self.pubsub.subscribe(None) # has to be called before we can get_message
+        # Not included in fresh state, such that local tasks are restarted when Redis
+        # connection is restored, and task classes don't go missing
+        self._local_tasks = []
+        self._task_classes = {}
 
-        # Create helpers instance with related Redis config
-        self.helpers = PyTaskHelpers(redis_instance, **kwargs)
+        # Setup a fresh state, enabling instance to handle Redis down, reset and restart
+        self.__clean_state__()
+
+    def __clean_state__(self):
+        self._channel_subscriptions = {}
+
+        # Active tasks & greenlets
+        self._tasks = {}
+        self._task_greenlets = {}
+
+        # Local task IDs
+        self._local_task_ids = []
+
+        # Custom exception handlers
+        self._exception_handlers = []
 
     # Public api
     #
@@ -96,13 +101,33 @@ class PyTask(PyTaskRedisConf):
         # Start reading from Redis pubsub
         pubsub_loop = gevent.spawn(self._pubsub)
 
-        # Kick off any _local_tasks
-        for (task_name, task_data) in self._local_tasks:
-            self._start_local_task(task_name, task_data)
+        # This is where we handle Redis failures
+        restart = False
 
-        # If this ever exits, something broke...
         try:
-            gevent.wait([new_task_loop, pubsub_loop, task_update_loop])
+            # Kick off any _local_tasks
+            for (task_name, task_data) in self._local_tasks:
+                self._start_local_task(task_name, task_data)
+
+            while True:
+                # For each greenlet that should be running
+                for greenlet in [new_task_loop, pubsub_loop, task_update_loop]:
+                    try:
+                        greenlet.get(timeout=1)
+
+                    # Expected behavour - greenlet still chugging along
+                    except gevent.Timeout:
+                        continue
+
+                    # Oh shit, something broke! Let the exception bubble up...
+                    break
+
+        # Redis has failed us - but we don't want the worker to completely fail, just
+        # to reset & hibernate until Redis returns
+        except RedisConnectionError:
+            self.logger.debug('Waiting for Redis...')
+            self._wait_for_redis()
+            restart = True
 
         # Handle normal SIGINT exit - requeue anything running
         except KeyboardInterrupt:
@@ -113,16 +138,28 @@ class PyTask(PyTaskRedisConf):
                 # Stop the task
                 self._stop_task(task_id)
 
-                # If this wasn't a local task, requeue it
-                if task_id not in self._local_task_ids:
+                # Local task? We can delete the Redis hash
+                if task_id in self._local_task_ids:
+                    self.redis.delete(self.helpers.task_key(task_id))
+
+                # Normal task? Requeue
+                else:
                     self.logger.info('Requeuing task: {0}'.format(task_id))
                     self.redis.lpush(self.NEW_QUEUE, task_id)
 
         # Always cleanup the workers, whether SIGINT or some other crash
         finally:
+            self.logger.debug('Killing workers...')
             new_task_loop.kill()
             pubsub_loop.kill()
             task_update_loop.kill()
+
+        # Now all the workers are cleaned up, do we restart?
+        if restart:
+            self.logger.debug('Restarting instance...')
+            # Reset internal state
+            self.__clean_state__()
+            self.run()
 
     def start_local_task(self, task_name, task_data=None):
         '''
@@ -153,6 +190,19 @@ class PyTask(PyTaskRedisConf):
 
     # Internal API
     #
+
+    def _wait_for_redis(self):
+        '''Wait for Redis to come back.'''
+
+        while True:
+            try:
+                self.redis.ping()
+                break
+
+            except RedisConnectionError:
+                pass
+
+        self.logger.debug('Redis is back!')
 
     def _start_local_task(self, task_name, task_data):
         '''Starts a task on *this* worker.'''
@@ -206,8 +256,9 @@ class PyTask(PyTaskRedisConf):
         # Publishing channel is the task id
         task._channel = self.task_key(task_id)
 
-        # Add to Redis set
-        self.redis.sadd(self.TASK_SET, task_id)
+        # Add to Redis set if normal task
+        if task_id not in self._local_task_ids:
+            self.redis.sadd(self.TASK_SET, task_id)
 
         # Set Redis data
         self.helpers.set_task(task_id, {
@@ -412,6 +463,9 @@ class PyTask(PyTaskRedisConf):
             and message['channel'] in self._channel_subscriptions
         ):
             self._channel_subscriptions[message['channel']](message['data'])
+            self.logger.debug('Pubsub message on {0}: {1}'.format(
+                message['channel'], message['data'])
+            )
 
         return message
 
@@ -419,6 +473,9 @@ class PyTask(PyTaskRedisConf):
         '''
         Check for Redis pubsub messages, apply to matching pattern/channel subscriptions.
         '''
+
+        # Has to be called before we can get_message
+        self.pubsub.subscribe('pytask')
 
         while True:
             # Read messages until we have no more
