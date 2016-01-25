@@ -36,7 +36,7 @@ class Monitor(Task):
     def check_tasks(self):
         self.logger.info('Checking tasks...')
 
-        task_ids = self.helpers.get_task_ids()
+        task_ids = self.helpers.get_active_task_ids()
 
         for task_id in task_ids:
             task = self.helpers.get_task(task_id)
