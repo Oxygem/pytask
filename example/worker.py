@@ -2,22 +2,30 @@
 # File: example/tasks/worker.py
 # Desc: a single worker for a pytask "swarm"
 
-import gevent
-gevent.monkey.patch_all()
-import redis
-from pytask import PyTask, Monitor
+# Monkey patch
+from gevent import monkey
+monkey.patch_all()
 
-# Create pytask and pass it a Redis instance
-task_app = PyTask(redis.StrictRedis())
+# Show logs
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+from pytask import PyTask
+from pytask.tasks import Monitor, Cleanup
+
+# Create pytask
+task_app = PyTask({'host': 'localhost', 'port': 6379})
 
 # Load tasks
-from .tasks import HelloWorld, Loop
+from tasks import HelloWorld, Loop
 task_app.add_task(HelloWorld)
 task_app.add_task(Loop)
 
 # Add the monitor task & pre-start it
 task_app.add_task(Monitor)
-task_app.pre_start_task('pytask/monitor')
+task_app.add_task(Cleanup)
+task_app.start_local_task('pytask/monitor')
+task_app.start_local_task('pytask/cleanup')
 
 # Start the worker
 task_app.run()

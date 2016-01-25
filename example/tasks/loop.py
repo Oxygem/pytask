@@ -2,7 +2,8 @@
 # File: example/tasks/loop.py
 # Desc: a simple infinite looping task (& publishing messages to Redis pubsub)
 
-from .pytask import Task, run_loop
+from pytask import Task
+from pytask.helpers import run_loop
 
 
 class Loop(Task):

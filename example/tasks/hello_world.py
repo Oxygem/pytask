@@ -2,7 +2,7 @@
 # File: example/tasks/hello_world.py
 # Desc: a simple hello world printing task
 
-from .pytask import Task
+from pytask import Task
 
 
 class HelloWorld(Task):
