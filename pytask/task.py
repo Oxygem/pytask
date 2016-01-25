@@ -17,6 +17,9 @@ class Task(object):
     # & channel name
     _channel = None
 
+    # Whether this task should be cleaned up (pushed to end queue)
+    _cleanup = True
+
     # Redis & helpers public objects
     redis = None
     helpers = None

@@ -69,8 +69,11 @@ class Monitor(Task):
 
 class Cleanup(Task):
     '''
-    A pytask which cleans up other pytasks! Checks all task state in Redis at configured
-    interval, removing where required.
+    A pytask which cleans up other pytasks! Drains the end queue and optionally triggers
+    a handler/callback function.
+
+    Args:
+        task_handler (str): ``module:attribute`` type string
     '''
 
     NAME = 'pytask/cleanup'
@@ -84,7 +87,7 @@ class Cleanup(Task):
 
     def start(self):
         while True:
-            task_id = self.redis.brpop(self.helpers.END_QUEUE)
+            _, task_id = self.redis.brpop(self.helpers.END_QUEUE)
             task = self.helpers.get_task(task_id)
 
             self.logger.info('Cleaning {0} task: {1}'.format(task.get('state'), task_id))

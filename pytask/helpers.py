@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import gevent
 
+from .redis_util import redis_clients, make_redis
+
 
 def run_loop(function, interval):
     '''
@@ -24,20 +26,15 @@ def run_loop(function, interval):
             gevent.sleep(interval - duration)
 
 
-class PyTaskRedisConf(object):
+class _PyTaskRedisConf(object):
     def __init__(
         self, redis_instance,
         task_set='tasks', task_prefix='task-',
         new_queue='new-task', end_queue='end-task'
     ):
         # If redis_instance is a list, make a client
-        if isinstance(redis_instance, list):
-            if len(redis_instance) == 1:
-                from redis import StrictRedis as RedisClient
-            else:
-                from rediscluster import StrictRedisClient as RedisClient
-
-            redis_instance = RedisClient(redis_instance)
+        if not isinstance(redis_instance, redis_clients):
+            redis_instance = make_redis(redis_instance)
 
         self.redis = redis_instance
 
@@ -53,10 +50,17 @@ class PyTaskRedisConf(object):
         return '{0}{1}-control'.format(self.TASK_PREFIX, task_id)
 
 
-class PyTaskHelpers(PyTaskRedisConf):
+class PyTaskHelpers(_PyTaskRedisConf):
     '''
     Helper functions for managing task data within Redis. All ``PyTask`` instances have
     an instance attached on their ``helpers`` attribute.
+
+    Args:
+        redis_instance (client or list): Redis client or list of ``(host, port)`` tuples
+        task_set (str): name of task set
+        task_prefix (str): prefix for task names
+        new_queue (str): queue to read new task IDs from
+        end_queue (str): where to push complete task IDs
     '''
 
     def get_task_ids(self):
@@ -115,23 +119,27 @@ class PyTaskHelpers(PyTaskRedisConf):
         # Remove the hash
         self.redis.delete(self.task_key(task_id))
 
-    def start_task(self, task_name, task_data, task_id=None):
+    def start_task(self, task_name, task_id=None, cleanup=True, **task_data):
         '''Start a new task.'''
 
         # task_id None implies a short running task, thus no option in start_update
         if task_id is None:
             task_id = str(uuid4())
 
-        # Ensure we're JSON encoded
-        if not isinstance(task_data, basestring):
-            task_data = json.dumps(task_data)
+        # Make data JSON encoded
+        task_data = json.dumps(task_data)
 
-        # Add the task & data to the task hash
-        self.set_task(task_id, {
+        task = {
             'task': task_name,
             'data': task_data,
             'state': 'WAIT'
-        })
+        }
+
+        if not cleanup:
+            task['cleanup'] = 'false'
+
+        # Add the task & data to the task hash
+        self.set_task(task_id, task)
 
         # Push the task ID to the new queue
         self.redis.lpush(self.NEW_QUEUE, task_id)

@@ -9,13 +9,13 @@ from time import time
 from uuid import uuid4
 
 import gevent
-from redis.exceptions import ConnectionError as RedisConnectionError
 
 from .task import Task
-from .helpers import run_loop, PyTaskHelpers, PyTaskRedisConf
+from .redis_util import redis_errors
+from .helpers import run_loop, PyTaskHelpers, _PyTaskRedisConf
 
 
-class PyTask(PyTaskRedisConf):
+class PyTask(_PyTaskRedisConf):
     '''
     A daemon that starts/stops tasks & replicates that to a Redis instance
     tasks can be control via Redis pubsub.
@@ -31,7 +31,6 @@ class PyTask(PyTaskRedisConf):
         task_prefix (str): prefix for task names
         new_queue (str): queue to read new task IDs from
         end_queue (str): where to push complete task IDs
-        new_task_interval (int): interval in s to check for new tasks
         update_task_interval (int): interval in s to update task times
     '''
 
@@ -101,6 +100,8 @@ class PyTask(PyTaskRedisConf):
 
         # Flag for handling Redis failure
         redis_is_down = False
+        # Flag for handling SIGINT
+        shutdown = False
 
         try:
             # Kick off any _local_tasks
@@ -122,11 +123,22 @@ class PyTask(PyTaskRedisConf):
 
         # Redis has failed us - but we don't want the worker to completely fail, just
         # to reset & hibernate until Redis returns
-        except RedisConnectionError:
+        except redis_errors:
             redis_is_down = True
 
         # Handle normal SIGINT exit - requeue anything running
         except KeyboardInterrupt:
+            shutdown = True
+
+        # Always cleanup, whether SIGINT, Redis or some other crash
+        finally:
+            self.logger.debug('Killing workers...')
+            new_task_loop.kill()
+            pubsub_loop.kill()
+            task_update_loop.kill()
+
+        # SIGINT?
+        if shutdown:
             self.logger.info('Exiting upon user command...')
 
             # Stop & requeue all running tasks (for another worker/etc)
@@ -146,19 +158,16 @@ class PyTask(PyTaskRedisConf):
                     self.logger.info('Requeuing task: {0}'.format(task_id))
                     self.redis.lpush(self.NEW_QUEUE, task_id)
 
-        # Always cleanup, whether SIGINT, Redis or some other crash
-        finally:
+        # Is Redis down? Kill tasks & wait for it and restart
+        if redis_is_down:
             self.logger.debug('Killing tasks...')
             for task_id in self._tasks.keys():
+                # Stop the task locally only, using _ prefix as valid Redis state
+                self._tasks[task_id]._state = '_STOPPED'
+                self._tasks[task_id].stop()
+                # Cleanup the local task bits
                 self._cleanup_task(task_id, enqueue=False)
 
-            self.logger.debug('Killing workers...')
-            new_task_loop.kill()
-            pubsub_loop.kill()
-            task_update_loop.kill()
-
-        # Is Redis down? Wait for it and restart
-        if redis_is_down:
             self.logger.debug('Waiting for Redis...')
             self._wait_for_redis()
 
@@ -167,14 +176,11 @@ class PyTask(PyTaskRedisConf):
             self.__clean_state__()
             self.run()
 
-    def start_local_task(self, task_name, task_data=None):
+    def start_local_task(self, task_name, **task_data):
         '''
         Used to start local tasks on this worker, which will start when ``.run`` is
         called.
         '''
-
-        if task_data is None:
-            task_data = {}
 
         self._local_tasks.append((task_name, task_data))
 
@@ -205,7 +211,7 @@ class PyTask(PyTaskRedisConf):
                 self.redis.ping()
                 break
 
-            except RedisConnectionError:
+            except redis_errors:
                 pass
 
         self.logger.debug('Redis is back!')
@@ -238,13 +244,13 @@ class PyTask(PyTaskRedisConf):
         ))
 
         # Read the task hash
-        task_hash = self.helpers.get_task(task_id, ['task', 'data'])
+        task_hash = self.helpers.get_task(task_id, ['task', 'data', 'cleanup'])
         if not task_hash:
             self.logger.critical('Task ID in queue but no hash: {0}'.format(task_id))
             return
 
         if task_hash:
-            task_class, task_data = task_hash
+            task_class, task_data, task_cleanup = task_hash
 
         if task_data is None:
             task_data = {}
@@ -265,6 +271,8 @@ class PyTask(PyTaskRedisConf):
         task._id = task_id
         # Publishing channel is the task id
         task._channel = self.task_key(task_id)
+
+        task._cleanup = task_cleanup != 'false'
 
         # Assign Redis/helpers references from self
         task.redis = self.redis
@@ -424,7 +432,10 @@ class PyTask(PyTaskRedisConf):
         '''Handle tasks which have ended successfully.'''
 
         # Ignore STOPPED tasks
-        if task_id not in self._tasks or self._tasks[task_id]._state == 'STOPPED':
+        if (
+            task_id not in self._tasks
+            or self._tasks[task_id]._state in ('STOPPED', '_STOPPED')
+        ):
             return
 
         self._handle_end_task(
@@ -442,7 +453,12 @@ class PyTask(PyTaskRedisConf):
         # Unsubscribe from control messages
         self._unsubscribe(self.task_control(task_id))
 
+        cleanup = True
+
         if task_id in self._tasks:
+            if self._tasks[task_id]._cleanup is False:
+                cleanup = False
+
             # Stop any running greenlet
             self._task_greenlets[task_id].kill(exception=self.StopTask)
 
@@ -450,8 +466,8 @@ class PyTask(PyTaskRedisConf):
             del self._tasks[task_id]
             del self._task_greenlets[task_id]
 
-        if enqueue:
-            # Push to the end queue
+        if enqueue and cleanup:
+            # Push to the end/cleanup queue
             self.redis.lpush(self.END_QUEUE, task_id)
 
     def _get_new_tasks(self):
@@ -520,7 +536,7 @@ class PyTask(PyTaskRedisConf):
             # the callback).
             try:
                 self.pubsub.unsubscribe(channel)
-            except RedisConnectionError:
+            except redis_errors:
                 pass
 
             del self._channel_subscriptions[channel]
