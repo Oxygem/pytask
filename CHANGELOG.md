@@ -1,3 +1,9 @@
+# v1.1 (WIP)
+
++ [Breaking] Refactored API, documentation, future versions to follow semver
++ Implemented `Monitor` and `Cleanup` tasks
++ Full support for Redis & Redis cluster
+
 # v1.0.2
 
 + Fixed not unsubscribing to task pubsub messages
