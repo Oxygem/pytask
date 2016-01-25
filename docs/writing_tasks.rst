@@ -64,7 +64,7 @@ Emitting Events
 
 Tasks can emit events to Redis pubsub:
 
-... code:: python
+.. code:: python
 
     class MyTask(Task):
         ...
