@@ -63,10 +63,20 @@ class PyTaskHelpers(_PyTaskRedisConf):
         end_queue (str): where to push complete task IDs
     '''
 
-    def get_task_ids(self):
+    def get_new_task_ids(self):
+        '''Get task IDs in the new queue.'''
+
+        return self.redis.lrange(self.NEW_QUEUE, 0, -1)
+
+    def get_end_task_ids(self):
+        '''Get task IDs in the end queue.'''
+
+        return self.redis.lrange(self.END_QUEUE, 0, -1)
+
+    def get_active_task_ids(self):
         '''Get a list of active ``task_ids``.'''
 
-        return self.redis.smembers(self.TASK_SET)
+        return list(self.redis.smembers(self.TASK_SET))
 
     def get_task(self, task_id, keys=None):
         '''Get task hash data.'''
