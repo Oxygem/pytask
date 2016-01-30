@@ -85,10 +85,13 @@ class PyTask(_PyTaskRedisConf):
         # Custom exception handlers
         self._exception_handlers = []
 
-    class PyTaskException(Exception):
+    class PyTaskError(Exception):
         pass
 
-    class StopTask(PyTaskException):
+    class MissingTaskError(PyTaskError):
+        pass
+
+    class StopTask(PyTaskError):
         pass
 
     # Public api
@@ -155,27 +158,6 @@ class PyTask(_PyTaskRedisConf):
             pubsub_loop.kill()
             task_update_loop.kill()
 
-        # SIGINT?
-        if shutdown:
-            self.logger.info('Exiting upon user command...')
-
-            # Stop & requeue all running tasks (for another worker/etc)
-            for task_id in self._tasks.keys():
-                if self._tasks[task_id]._state != 'RUNNING':
-                    continue
-
-                # Stop the task
-                self._stop_task(task_id)
-
-                # Local task? We can delete the Redis hash
-                if task_id in self._local_task_ids:
-                    self.redis.delete(self.helpers.task_key(task_id))
-
-                # Normal task? Requeue
-                else:
-                    self.logger.info('Requeuing task: {0}'.format(task_id))
-                    self.redis.lpush(self.NEW_QUEUE, task_id)
-
         # Is Redis down? Kill tasks & wait for it and restart
         if redis_is_down:
             self.logger.debug('Killing tasks...')
@@ -196,6 +178,28 @@ class PyTask(_PyTaskRedisConf):
             self.logger.debug('Restarting instance...')
             self.__clean_state__()
             self.run()
+
+        # SIGINT?
+        if shutdown:
+            self.logger.info('Exiting upon user command...')
+
+            # Stop & requeue all running tasks (for another worker/etc)
+            for task_id in self._tasks.keys():
+                if self._tasks[task_id]._state != 'RUNNING':
+                    continue
+
+                # Stop the task
+                self._stop_task(task_id)
+
+                # Local task? We can delete the Redis hash & from the task set
+                if task_id in self._local_task_ids:
+                    self.redis.delete(self.helpers.task_key(task_id))
+                    self.redis.srem(self.helpers.TASK_SET, task_id)
+
+                # Normal task? Requeue
+                else:
+                    self.logger.info('Requeuing task: {0}'.format(task_id))
+                    self.redis.lpush(self.helpers.NEW_QUEUE, task_id)
 
     def start_local_task(self, task_name, **task_data):
         '''
@@ -288,8 +292,27 @@ class PyTask(_PyTaskRedisConf):
         if task_data is None:
             task_data = {}
 
+        # Add to Redis set
+        self.redis.sadd(self.helpers.TASK_SET, task_id)
+
+        # Set Redis data
+        self.helpers.set_task(task_id, {
+            'state': 'RUNNING',
+            'last_update': time()
+        })
+
+        # Subscribe to control channel
+        self._subscribe(
+            self.task_control(task_id),
+            lambda message: self._control_task(task_id, message)
+        )
+
+        # If the task doesn't exist, trigger exception
         if task_class not in self._task_classes:
-            self.logger.critical('Task not found: {0}'.format(task_class))
+            self._on_task_exception(
+                task_id,
+                self.MissingTaskError('Task not found: {0}'.format(task_class))
+            )
             return
 
         # Create task instance, assign it Redis
@@ -314,22 +337,6 @@ class PyTask(_PyTaskRedisConf):
         # Assign Redis/helpers references from self
         task.redis = self.redis
         task.helpers = self.helpers
-
-        # Set Redis data
-        self.helpers.set_task(task_id, {
-            'state': 'RUNNING',
-            'last_update': time()
-        })
-
-        # Subscribe to control channel
-        self._subscribe(
-            self.task_control(task_id),
-            lambda message: self._control_task(task_id, message)
-        )
-
-        # Add to Redis set if normal task
-        if not local:
-            self.redis.sadd(self.TASK_SET, task_id)
 
         # Assign the task internally & pass to _start_task
         self._tasks[task_id] = task
@@ -399,7 +406,7 @@ class PyTask(_PyTaskRedisConf):
 
         # Set STOPPED in task & Redis *before* we stop the task - stopping the task will
         # trigger either _on_task_exception or _on_task_success
-        self.redis.srem(self.TASK_SET, task_id)
+        self.redis.srem(self.helpers.TASK_SET, task_id)
         task._state = 'STOPPED'
         self.helpers.set_task(task_id, 'state', 'STOPPED')
 
@@ -423,7 +430,7 @@ class PyTask(_PyTaskRedisConf):
             )
 
         # Remove from the active set
-        self.redis.srem(self.TASK_SET, task_id)
+        self.redis.srem(self.helpers.TASK_SET, task_id)
 
         # Set state
         self.helpers.set_task(task_id, {
@@ -521,7 +528,7 @@ class PyTask(_PyTaskRedisConf):
 
         if enqueue and cleanup:
             # Push to the end/cleanup queue
-            self.redis.lpush(self.END_QUEUE, task_id)
+            self.redis.lpush(self.helpers.END_QUEUE, task_id)
 
     def _get_new_tasks(self):
         '''
@@ -529,7 +536,7 @@ class PyTask(_PyTaskRedisConf):
         '''
 
         while True:
-            _, new_task_id = self.redis.brpop(self.NEW_QUEUE)
+            _, new_task_id = self.redis.brpop(self.helpers.NEW_QUEUE)
             self._add_task(new_task_id)
 
     def _update_tasks(self):
