@@ -273,18 +273,26 @@ class PyTask(_PyTaskRedisConf):
         Interally add a task from the new-task queue.
         '''
 
-        local = task_id in self._local_task_ids
-
-        self.logger.debug('New {0}task: {1}'.format(
-            'local ' if local else '',
-            task_id
-        ))
+        # Check the task doesn't already exists
+        if self.redis.sismember(task_id, self.TASK_SET):
+            self.logger.critical(
+                'Task ID in new queue but already in set: {0}'.format(task_id)
+            )
+            return
 
         # Read the task hash
         task_hash = self.helpers.get_task(task_id, ['task', 'data', 'cleanup'])
         if not task_hash:
-            self.logger.critical('Task ID in queue but no hash: {0}'.format(task_id))
+            self.logger.critical(
+                'Task ID in new queue but no hash: {0}'.format(task_id)
+            )
             return
+
+        local = task_id in self._local_task_ids
+        self.logger.debug('New {0}task: {1}'.format(
+            'local ' if local else '',
+            task_id
+        ))
 
         if task_hash:
             task_class, task_data, task_cleanup = task_hash
@@ -293,7 +301,7 @@ class PyTask(_PyTaskRedisConf):
             task_data = {}
 
         # Add to Redis set
-        self.redis.sadd(self.helpers.TASK_SET, task_id)
+        self.redis.sadd(self.TASK_SET, task_id)
 
         # Set Redis data
         self.helpers.set_task(task_id, {
