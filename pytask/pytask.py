@@ -273,7 +273,7 @@ class PyTask(_PyTaskRedisConf):
         Interally add a task from the new-task queue.
         '''
 
-        # Check the task doesn't already exists
+        # Check the task doesn't already exist
         if self.redis.sismember(task_id, self.TASK_SET):
             self.logger.critical(
                 'Task ID in new queue but already in set: {0}'.format(task_id)
