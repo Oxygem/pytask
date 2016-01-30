@@ -85,3 +85,22 @@ for unexpected errors.
         ...
         def start(self):
             raise self.Error('Task failz!')
+
+
+Context
+-------
+
+Sometimes it's desirable to wrap task method calls with some kind of application specific
+context (eg a Flask app). To do this a task needs to define a static ``provide_context``
+method, like so:
+
+.. code:: python
+
+    class MyTask(Task):
+        @staticmethod
+        def provide_context():
+            # Wrap task methods in Flask.app_context
+            return web_app.app_context()
+
+The context will be created before the task instance is created, and all task methods
+(``__init__``, ``start`` & ``stop``) will be nested inside the context.

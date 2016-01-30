@@ -10,8 +10,16 @@ tasks to handle failure of workers. pytask is designed distributed and :doc:`fau
     :maxdepth: 1
     :caption: Using pytask
 
-    api
+    starting_workers
     writing_tasks
+    api
+
+
+.. toctree::
+    :maxdepth: 1
+    :caption: pytask Clusters
+
+    clustering_pytask
     fault_tolerance
 
 
