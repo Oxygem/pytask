@@ -20,15 +20,20 @@ class Task(object):
     # Whether this task should be cleaned up (pushed to end queue)
     _cleanup = True
 
+    # Any context for this task
+    _context = None
+
     # Redis & helpers public objects
     redis = None
     helpers = None
 
     class Error(Exception):
-        '''An exception which, when raised, puts this task in the ``ERROR`` state.'''
+        '''
+        An exception which, when raised, puts this task in the ``ERROR`` state.
+        '''
         pass
 
-    def __init__(self, **task_data):
+    def __init__(self, **kwargs):
         pass
 
     # Tasks which don't define a stop are assumed not to spawn any sub-greenlets
@@ -37,7 +42,9 @@ class Task(object):
         pass
 
     def emit(self, event, data=None):
-        '''Emit task events -> pubsub channel.'''
+        '''
+        Emit task events -> pubsub channel.
+        '''
 
         self.redis.publish(self._channel, json.dumps({
             'event': event,

@@ -7,12 +7,28 @@ import logging
 import traceback
 from time import time
 from uuid import uuid4
+from types import FunctionType
 
 import gevent
 
 from .task import Task
 from .redis_util import redis_errors
 from .helpers import run_loop, PyTaskHelpers, _PyTaskRedisConf
+
+
+def _wrap_task_context(task, func, *args, **kwargs):
+    if (
+        hasattr(task, 'provide_context')
+        and isinstance(task.provide_context, FunctionType)
+    ):
+        # We only create context one per task
+        if not task._context:
+            task._context = task.provide_context()
+
+        with task._context:
+            return func(*args, **kwargs)
+
+    return func(*args, **kwargs)
 
 
 class PyTask(_PyTaskRedisConf):
@@ -79,7 +95,9 @@ class PyTask(_PyTaskRedisConf):
     #
 
     def run(self, task_map=None):
-        '''Run pytask, basically a wrapper to handle KeyboardInterrupt.'''
+        '''
+        Run pytask, basically a wrapper to handle KeyboardInterrupt.
+        '''
 
         if task_map:
             self._task_classes.update(task_map)
@@ -162,9 +180,12 @@ class PyTask(_PyTaskRedisConf):
         if redis_is_down:
             self.logger.debug('Killing tasks...')
             for task_id in self._tasks.keys():
+                task = self._tasks[task_id]
+
                 # Stop the task locally only, using _ prefix as valid Redis state
-                self._tasks[task_id]._state = '_STOPPED'
-                self._tasks[task_id].stop()
+                task._state = '_STOPPED'
+                _wrap_task_context(task, task.stop)
+
                 # Cleanup the local task bits
                 self._cleanup_task(task_id, enqueue=False)
 
@@ -185,18 +206,24 @@ class PyTask(_PyTaskRedisConf):
         self._local_tasks.append((task_name, task_data))
 
     def add_task(self, task_class):
-        '''Add a task class.'''
+        '''
+        Add a task class.
+        '''
 
         self._task_classes[task_class.NAME] = task_class
 
     def add_tasks(self, *task_classes):
-        '''Add multiple task classes.'''
+        '''
+        Add multiple task classes.
+        '''
 
         for task_class in task_classes:
             self.add_task(task_class)
 
     def add_exception_handler(self, handler):
-        '''Add an exception handler.'''
+        '''
+        Add an exception handler.
+        '''
 
         self._exception_handlers.append(handler)
 
@@ -204,7 +231,9 @@ class PyTask(_PyTaskRedisConf):
     #
 
     def _wait_for_redis(self):
-        '''Wait for Redis to come back.'''
+        '''
+        Wait for Redis to come back.
+        '''
 
         while True:
             try:
@@ -217,7 +246,9 @@ class PyTask(_PyTaskRedisConf):
         self.logger.debug('Redis is back!')
 
     def _start_local_task(self, task_name, task_data):
-        '''Starts a task on *this* worker.'''
+        '''
+        Starts a task on *this* worker.
+        '''
 
         # Generate task_id
         task_id = str(uuid4())
@@ -234,7 +265,9 @@ class PyTask(_PyTaskRedisConf):
         self._add_task(task_id)
 
     def _add_task(self, task_id):
-        '''Interally add a task from the new-task queue.'''
+        '''
+        Interally add a task from the new-task queue.
+        '''
 
         local = task_id in self._local_task_ids
 
@@ -262,7 +295,11 @@ class PyTask(_PyTaskRedisConf):
         # Create task instance, assign it Redis
         try:
             data = json.loads(task_data)
-            task = self._task_classes[task_class](**data)
+            task = _wrap_task_context(
+                self._task_classes[task_class],
+                self._task_classes[task_class],
+                **data
+            )
 
         except Exception as e:
             self._on_task_exception(task_id, e)
@@ -300,7 +337,9 @@ class PyTask(_PyTaskRedisConf):
         self.logger.info('Task {0} added with ID {1}'.format(task_class, task_id))
 
     def _control_task(self, task_id, message):
-        '''Handle control pubsub messages.'''
+        '''
+        Handle control pubsub messages.
+        '''
 
         if message == 'stop':
             self._stop_task(task_id)
@@ -312,12 +351,14 @@ class PyTask(_PyTaskRedisConf):
             self.logger.warning('Unknown control command: {0}'.format(message))
 
     def _start_task(self, task_id):
-        '''Starts a task in a new greenlet.'''
+        '''
+        Starts a task in a new greenlet.
+        '''
 
         self.logger.debug('Starting task: {0}'.format(task_id))
         task = self._tasks[task_id]
 
-        greenlet = gevent.spawn(task.start)
+        greenlet = gevent.spawn(_wrap_task_context, task, task.start)
 
         # Handle task complete
         greenlet.link_value(lambda glet: (
@@ -336,7 +377,9 @@ class PyTask(_PyTaskRedisConf):
         self.helpers.set_task(task_id, 'state', 'RUNNING')
 
     def _reload_task(self, task_id):
-        '''Reload a tasks data by stopping/re-init-ing/starting.'''
+        '''
+        Reload a tasks data by stopping/re-init-ing/starting.
+        '''
 
         self.logger.debug('Reloading task: {0}'.format(task_id))
 
@@ -347,7 +390,9 @@ class PyTask(_PyTaskRedisConf):
         self._add_task(task_id)
 
     def _stop_task(self, task_id):
-        '''Stops a task and kills/removes the greenlet.'''
+        '''
+        Stops a task and kills/removes the greenlet.
+        '''
 
         self.logger.debug('Stopping task: {0}'.format(task_id))
         task = self._tasks[task_id]
@@ -359,7 +404,7 @@ class PyTask(_PyTaskRedisConf):
         self.helpers.set_task(task_id, 'state', 'STOPPED')
 
         # Stop the task
-        task.stop()
+        _wrap_task_context(task, task.stop)
 
         # End it's greenlet
         self._task_greenlets[task_id].kill(exception=self.StopTask)
@@ -368,7 +413,9 @@ class PyTask(_PyTaskRedisConf):
         self._cleanup_task(task_id, enqueue=False)
 
     def _handle_end_task(self, task_id, state, output, log_func=None):
-        '''Shortcut for repeated steps in handling task exceptions/errors/successes.'''
+        '''
+        Shortcut for repeated steps in handling task exceptions/errors/successes.
+        '''
 
         if log_func:
             log_func('{0} in task: {1}: {2}'.format(
@@ -394,7 +441,9 @@ class PyTask(_PyTaskRedisConf):
             task.emit(state.lower(), output)
 
     def _on_task_exception(self, task_id, exception):
-        '''Handle exceptions in running tasks.'''
+        '''
+        Handle exceptions in running tasks.
+        '''
 
         # Completely ignore stopping tasks
         if isinstance(exception, self.StopTask):
@@ -419,7 +468,9 @@ class PyTask(_PyTaskRedisConf):
         self._cleanup_task(task_id)
 
     def _on_task_error(self, task_id, exception):
-        '''Handle tasks which have raised a ``Task.Error``.'''
+        '''
+        Handle tasks which have raised a ``Task.Error``.
+        '''
 
         self._handle_end_task(
             task_id, 'ERROR', exception.message,
@@ -429,7 +480,9 @@ class PyTask(_PyTaskRedisConf):
         self._cleanup_task(task_id)
 
     def _on_task_success(self, task_id, data):
-        '''Handle tasks which have ended successfully.'''
+        '''
+        Handle tasks which have ended successfully.
+        '''
 
         # Ignore STOPPED tasks
         if (
@@ -471,14 +524,18 @@ class PyTask(_PyTaskRedisConf):
             self.redis.lpush(self.END_QUEUE, task_id)
 
     def _get_new_tasks(self):
-        '''Check for new tasks in Redis.'''
+        '''
+        Check for new tasks in Redis.
+        '''
 
         while True:
             _, new_task_id = self.redis.brpop(self.NEW_QUEUE)
             self._add_task(new_task_id)
 
     def _update_tasks(self):
-        '''Update RUNNING task times in Redis.'''
+        '''
+        Update RUNNING task times in Redis.
+        '''
 
         update_time = time()
 
@@ -522,13 +579,17 @@ class PyTask(_PyTaskRedisConf):
             gevent.sleep(.5)
 
     def _subscribe(self, channel, callback):
-        '''Subscribe to Redis pubsub messages.'''
+        '''
+        Subscribe to Redis pubsub messages.
+        '''
 
         self._channel_subscriptions[channel] = callback
         self.pubsub.subscribe(channel)
 
     def _unsubscribe(self, channel):
-        '''Unsubscribe from Redis pubsub messages.'''
+        '''
+        Unsubscribe from Redis pubsub messages.
+        '''
 
         if channel in self._channel_subscriptions:
             # This has to be resiliant to Redis connection failure as will be called
