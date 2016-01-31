@@ -273,13 +273,6 @@ class PyTask(_PyTaskRedisConf):
         Interally add a task from the new-task queue.
         '''
 
-        # Check the task doesn't already exist
-        if self.redis.sismember(task_id, self.TASK_SET):
-            self.logger.critical(
-                'Task ID in new queue but already in set: {0}'.format(task_id)
-            )
-            return
-
         # Read the task hash
         task_hash = self.helpers.get_task(task_id, ['task', 'data', 'cleanup'])
         if not task_hash:
@@ -288,17 +281,17 @@ class PyTask(_PyTaskRedisConf):
             )
             return
 
-        local = task_id in self._local_task_ids
-        self.logger.debug('New {0}task: {1}'.format(
-            'local ' if local else '',
-            task_id
-        ))
-
         if task_hash:
             task_class, task_data, task_cleanup = task_hash
 
         if task_data is None:
             task_data = {}
+
+        local = task_id in self._local_task_ids
+        self.logger.debug('New {0}task: {1}'.format(
+            'local ' if local else '',
+            task_id
+        ))
 
         # Add to Redis set
         self.redis.sadd(self.TASK_SET, task_id)
@@ -414,7 +407,6 @@ class PyTask(_PyTaskRedisConf):
 
         # Set STOPPED in task & Redis *before* we stop the task - stopping the task will
         # trigger either _on_task_exception or _on_task_success
-        self.redis.srem(self.helpers.TASK_SET, task_id)
         task._state = 'STOPPED'
         self.helpers.set_task(task_id, 'state', 'STOPPED')
 
@@ -436,9 +428,6 @@ class PyTask(_PyTaskRedisConf):
             log_func('{0} in task: {1}: {2}'.format(
                 state.lower().title(), task_id, output)
             )
-
-        # Remove from the active set
-        self.redis.srem(self.helpers.TASK_SET, task_id)
 
         # Set state
         self.helpers.set_task(task_id, {
@@ -537,6 +526,9 @@ class PyTask(_PyTaskRedisConf):
         if enqueue and cleanup:
             # Push to the end/cleanup queue
             self.redis.lpush(self.helpers.END_QUEUE, task_id)
+
+            # Remove from the active set
+            self.redis.srem(self.helpers.TASK_SET, task_id)
 
     def _get_new_tasks(self):
         '''
