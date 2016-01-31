@@ -63,6 +63,13 @@ class PyTaskHelpers(_PyTaskRedisConf):
         end_queue (str): where to push complete task IDs
     '''
 
+    def _push_new_task_id(self, task_id):
+        # Push the task ID to the new queue if not already present - this requires a scan
+        # of the entire new queue, so hopefully it's smallish.
+        new_tasks = self.redis.lrange(self.NEW_QUEUE, 0, -1)
+        if task_id not in new_tasks:
+            self.redis.lpush(self.NEW_QUEUE, task_id)
+
     def get_new_task_ids(self):
         '''Get task IDs in the new queue.'''
 
@@ -114,7 +121,7 @@ class PyTaskHelpers(_PyTaskRedisConf):
         self.redis.publish(self.task_control(task_id), 'stop')
 
     def restart_task(self, task_id):
-        self.redis.lpush(self.NEW_QUEUE, task_id)
+        self._push_new_task_id(task_id)
 
     def restart_if_state(self, task_id, states):
         state = self.get_task(task_id, 'state')
@@ -151,10 +158,7 @@ class PyTaskHelpers(_PyTaskRedisConf):
         # Add the task & data to the task hash
         self.set_task(task_id, task)
 
-        # Push the task ID to the new queue if not already present - this requires a scan
-        # of the entire new queue, so hopefully it's smallish.
-        new_tasks = self.redis.lrange(self.NEW_QUEUE, 0, -1)
-        if task_id not in new_tasks:
-            self.redis.lpush(self.NEW_QUEUE, task_id)
+        # Push to Redis
+        self._push_new_task_id(task)
 
         return task_id
