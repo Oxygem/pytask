@@ -64,9 +64,10 @@ class PyTaskHelpers(_PyTaskRedisConf):
     '''
 
     def _push_new_task_id(self, task_id):
-        # Push the task ID to the new queue if not already present - this requires a scan
-        # of the entire new queue, so hopefully it's smallish.
+        # Push the task ID to the new queue if not already present - this requires a
+        # scan of the entire new queue, so hopefully it's smallish.
         new_tasks = self.redis.lrange(self.NEW_QUEUE, 0, -1)
+
         if task_id not in new_tasks:
             self.redis.lpush(self.NEW_QUEUE, task_id)
 
@@ -159,6 +160,6 @@ class PyTaskHelpers(_PyTaskRedisConf):
         self.set_task(task_id, task)
 
         # Push to Redis
-        self._push_new_task_id(task)
+        self._push_new_task_id(task_id)
 
         return task_id
