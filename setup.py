@@ -6,7 +6,7 @@ from setuptools import setup
 
 
 setup(
-    version='1.1dev1',
+    version='1.1dev2',
     name='pytask',
     description='A simple gevent Python task runner',
     author='Nick Barrett @ Oxygem',
